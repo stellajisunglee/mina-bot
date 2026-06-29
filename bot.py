@@ -112,7 +112,7 @@ async def daily_morning():
 
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
-        f"**today's sentence: **\n> {sentence}\n\n"
+        f"**sentence of the day: **\n> {sentence}\n\n"
         f"how would you say this sentence in japanese? send a quick voice memo or drop your translation below\n\n"
         f"feel free to give each other feedback! come back in 12 hours for the reveal 😎"
     )
@@ -145,7 +145,7 @@ async def daily_evening():
 
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
-        f"**the sentence was:**\n\n"
+        f"**the sentence was:**\n"
         f"*{state['sentence']}*\n\n"
         f"{japanese}\n\n"
         f"how did you do??"
