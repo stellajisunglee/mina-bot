@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 import json
 from datetime import time
-import pytz
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -13,11 +13,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
-TIMEZONE = pytz.timezone("America/Los_Angeles")
-MORNING_TIME = time(9, 0)
-EVENING_TIME = time(18, 0)
+TIMEZONE = ZoneInfo("America/Los_Angeles")
+MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
+EVENING_TIME = time(18, 0, tzinfo=TIMEZONE)
 
 STATE_FILE = "state.json"
+TEST_STATE_FILE = "test_state.json"
 
 client_ai = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -26,15 +27,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
+def load_state(state_file=STATE_FILE):
+    if os.path.exists(state_file):
+        with open(state_file, "r") as f:
             return json.load(f)
     return {}
 
 
-def save_state(data):
-    with open(STATE_FILE, "w") as f:
+def save_state(data, state_file=STATE_FILE):
+    with open(state_file, "w") as f:
         json.dump(data, f)
 
 
@@ -47,9 +48,9 @@ def generate_english_sentence():
             "content": """Generate one natural, conversational English sentence for a Japanese learning community to translate.
 
 Rules:
-- It should feel like something a real person would say in daily life
-- Vary the theme each day: emotions, food, plans, observations, small talk, pop culture, etc.
-- Avoid overly simple sentences (not "I eat rice") but keep it accessible to beginner and intermediate learners
+- It should feel like something a real person would say in daily life.
+- Sentence theme should be either food, travel, fashion, hobbies, anime, movies, music, gaming, pets, sports, or books.
+- Avoid overly simple sentences (not "I eat rice") and keep it accessible to beginner and intermediate learners.
 - Do NOT include the Japanese translation
 - Return ONLY the sentence, nothing else"""
         }]
@@ -64,18 +65,18 @@ def generate_japanese_translation(sentence):
         messages=[{
             "role": "user",
             "content": f"""You are a native Japanese speaker in your 20s living in Tokyo. 
-A new friend you made just said this to you in English — how would you naturally say it in Japanese at the N5, N4, or N3 level?
-
-"{sentence}"
+            You made a new friend who came from America and is studying Japanese. They asked you how to say this English sentence in Japanese-
+            how would you naturally say it in Japanese? It should be at the N5, N4, or N3 level.
+            "{sentence}"
 
 Rules:
-- Write exactly how you would say it out loud to a new friend you just made, not how you would say it to a friend you have known for many years nor how a textbook would phrase it
-- Do NOT use contractions like んだ、ちゃう、てる
-- Do NOT end sentences with よね、かな、じゃん、けど etc. unless it is the most prevalent way to say it in Japan
-- If there are multiple natural ways to say it, pick the most conversational one
-- Avoid でございます、～いたします or any keigo unless the sentence specifically calls for it
-- Provide the Japanese in three forms: kanji/kana, hiragana reading, and romaji
-- Add a maximum two-sentence note explaining anything nuanced about the phrasing or any slang used
+- Write exactly how you would say it out loud to a new friend you just made, not how you would say it to a friend you have known for many years nor how a textbook would phrase it.
+- Do NOT use contractions like んだ、ちゃう、てる, etc.
+- Do NOT end sentences with よね、かな、じゃん、けど etc. unless it is the number one most prevalent way to say that sentence in Japan.
+- If there are multiple natural ways to say it, pick the most conversational one.
+- Avoid でございます、～いたします or any keigo unless the sentence specifically calls for it.
+- Provide the Japanese in three forms: kanji/kana, hiragana reading, and romaji.
+- Add a maximum two-sentence note explaining anything nuanced about the phrasing or any slang used.
 - Format exactly like this:
 
 **japanese:**
@@ -101,8 +102,7 @@ async def on_ready():
     daily_evening.start()
 
 
-@tasks.loop(time=MORNING_TIME)
-async def daily_morning():
+async def run_morning(state_file=STATE_FILE):
     channel = bot.get_channel(CHANNEL_ID)
     if not channel:
         print("Channel not found")
@@ -113,21 +113,20 @@ async def daily_morning():
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
         f"**sentence of the day: **\n> {sentence}\n\n"
-        f"how would you say this sentence in japanese? send a quick voice memo or drop your translation below\n\n"
-        f"feel free to give each other feedback! come back in 12 hours for the reveal 😎"
+        f"how would you say this sentence in japanese? send a quick voice memo or drop your translation below\n"
+        f"feel free to give each other feedback and come back in 12 hours for the reveal 😎"
     )
 
     save_state({
         "sentence": sentence,
         "message_id": message.id
-    })
+    }, state_file)
 
     print(f"Morning drop sent: {sentence}")
 
 
-@tasks.loop(time=EVENING_TIME)
-async def daily_evening():
-    state = load_state()
+async def run_evening(state_file=STATE_FILE):
+    state = load_state(state_file)
     if not state:
         print("No state found for evening reveal")
         return
@@ -159,20 +158,30 @@ async def daily_evening():
     print("Evening reveal sent")
 
 
+@tasks.loop(time=MORNING_TIME)
+async def daily_morning():
+    await run_morning(STATE_FILE)
+
+
+@tasks.loop(time=EVENING_TIME)
+async def daily_evening():
+    await run_evening(STATE_FILE)
+
+
 @bot.command(name="testmorning")
-@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or 
+@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles))
 async def test_morning(ctx):
-    await daily_morning()
+    await run_morning(TEST_STATE_FILE)
     import asyncio
     await asyncio.sleep(1)
     await ctx.message.delete()
 
 @bot.command(name="testevening")
-@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or 
+@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles))
 async def test_evening(ctx):
-    await daily_evening()
+    await run_evening(TEST_STATE_FILE)
     import asyncio
     await asyncio.sleep(1)
     await ctx.message.delete()

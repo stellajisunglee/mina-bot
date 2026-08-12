@@ -2,3 +2,5 @@
 venv/
 __pycache__/
 state.json
+test_state.json
+.DS_Store
