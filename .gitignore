@@ -4,5 +4,6 @@ __pycache__/
 state.json
 test_state.json
 engagement.json
+events.jsonl
 .DS_Store
 bot.log

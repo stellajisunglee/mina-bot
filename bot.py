@@ -5,6 +5,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 import os
 import json
+import re
 from datetime import time, datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -23,7 +24,10 @@ EVENING_TIME = time(18, 0, tzinfo=TIMEZONE)
 STATE_FILE = "state.json"
 TEST_STATE_FILE = "test_state.json"
 ENGAGEMENT_FILE = "engagement.json"
+EVENTS_FILE = "events.jsonl"
 CHECKME_DAILY_LIMIT = 5
+
+JAPANESE_PATTERN = re.compile(r'[぀-ヿ一-鿿]')
 
 client_ai = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -60,11 +64,44 @@ def today_str():
     return datetime.now(TIMEZONE).date().isoformat()
 
 
+def log_event(event_type, user_id, **extra):
+    event = {
+        "timestamp": datetime.now(TIMEZONE).isoformat(),
+        "event_type": event_type,
+        "user_id": str(user_id) if user_id is not None else None,
+    }
+    event.update(extra)
+    with open(EVENTS_FILE, "a") as f:
+        f.write(json.dumps(event) + "\n")
+
+
+def contains_japanese(text):
+    return bool(JAPANESE_PATTERN.search(text))
+
+
+def is_within_active_window():
+    state = load_state(STATE_FILE)
+    posted_at = state.get("posted_at")
+    if not posted_at:
+        return False
+
+    now = datetime.now(TIMEZONE)
+    if now < datetime.fromisoformat(posted_at):
+        return False
+
+    revealed_at = state.get("revealed_at")
+    if revealed_at and now >= datetime.fromisoformat(revealed_at):
+        return False
+
+    return True
+
+
 def default_user():
     return {
         "current_streak": 0,
         "longest_streak": 0,
         "last_participated": None,
+        "first_participated": None,
         "total_days": 0,
         "checkme_uses": 0,
         "checkme_last_date": None,
@@ -89,6 +126,8 @@ def record_participation(user_id):
     user["longest_streak"] = max(user["longest_streak"], user["current_streak"])
     user["total_days"] += 1
     user["last_participated"] = today.isoformat()
+    if not user["first_participated"]:
+        user["first_participated"] = today.isoformat()
 
     save_engagement(data)
 
@@ -219,8 +258,10 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if not message.author.bot and message.channel.id == CHANNEL_ID:
+    if (not message.author.bot and message.channel.id == CHANNEL_ID
+            and contains_japanese(message.content) and is_within_active_window()):
         record_participation(message.author.id)
+        log_event("participation", message.author.id)
     await bot.process_commands(message)
 
 
@@ -235,17 +276,19 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
         f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
-        f"**Sentence of the day:**\n> {sentence}\n\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n"
-        f"Feel free to give each other feedback and come back in 12 hours for the reveal 😎\n\n"
+        f"**Sentence of the day:**\n> {sentence}\n\n"
+        f"Give each other feedback and come back in 12 hours for the reveal 😎\n\n"
         f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak."
     )
 
     save_state({
         "sentence": sentence,
-        "message_id": message.id
+        "message_id": message.id,
+        "posted_at": datetime.now(TIMEZONE).isoformat()
     }, state_file)
 
+    log_event("morning_posted", None, sentence=sentence, channel_id=channel_id)
     print(f"Morning drop sent: {sentence}")
 
 
@@ -269,7 +312,7 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
         f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
-        f"How did you do??"
+        f"How did you do??\n\n"
         f"**The sentence was:**\n"
         f"*{state['sentence']}*\n\n"
         f"{japanese}\n\n"
@@ -280,6 +323,10 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     else:
         await channel.send(reveal_text)
 
+    state["revealed_at"] = datetime.now(TIMEZONE).isoformat()
+    save_state(state, state_file)
+
+    log_event("evening_revealed", None, sentence=state["sentence"], channel_id=channel_id)
     print("Evening reveal sent")
 
 
@@ -340,6 +387,7 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
 
     record_participation(interaction.user.id)
     record_checkme_usage(interaction.user.id)
+    log_event("checkme", interaction.user.id)
 
 
 @bot.tree.context_menu(name="Check my Japanese")
@@ -360,6 +408,7 @@ async def checkme_context(interaction: discord.Interaction, message: discord.Mes
 @bot.tree.command(name="streak", description="See your participation streak")
 async def streak(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
+    log_event("streak_check", interaction.user.id)
 
     data = load_engagement()
     user = data["users"].get(str(interaction.user.id))
