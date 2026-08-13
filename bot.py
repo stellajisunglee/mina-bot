@@ -13,6 +13,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+BETA_TESTERS_ROLE_ID = int(os.getenv("BETA_TESTERS_ROLE_ID"))
 
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
@@ -232,6 +233,7 @@ async def run_morning(state_file=STATE_FILE):
 
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
+        f"<@&{BETA_TESTERS_ROLE_ID}>\n"
         f"**Sentence of the day:**\n> {sentence}\n\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n"
         f"Feel free to give each other feedback and come back in 12 hours for the reveal 😎\n\n"
@@ -265,6 +267,7 @@ async def run_evening(state_file=STATE_FILE):
 
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
+        f"<@&{BETA_TESTERS_ROLE_ID}>\n"
         f"**The sentence was:**\n"
         f"*{state['sentence']}*\n\n"
         f"{japanese}\n\n"
