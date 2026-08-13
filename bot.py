@@ -224,8 +224,8 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-async def run_morning(state_file=STATE_FILE):
-    channel = bot.get_channel(CHANNEL_ID)
+async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
+    channel = bot.get_channel(channel_id)
     if not channel:
         print("Channel not found")
         return
@@ -234,7 +234,7 @@ async def run_morning(state_file=STATE_FILE):
 
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
-        f"<@&{BETA_TESTERS_ROLE_ID}>\n"
+        f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
         f"**Sentence of the day:**\n> {sentence}\n\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n"
         f"Feel free to give each other feedback and come back in 12 hours for the reveal 😎\n\n"
@@ -249,13 +249,13 @@ async def run_morning(state_file=STATE_FILE):
     print(f"Morning drop sent: {sentence}")
 
 
-async def run_evening(state_file=STATE_FILE):
+async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     state = load_state(state_file)
     if not state:
         print("No state found for evening reveal")
         return
 
-    channel = bot.get_channel(CHANNEL_ID)
+    channel = bot.get_channel(channel_id)
     if not channel:
         return
 
@@ -268,11 +268,11 @@ async def run_evening(state_file=STATE_FILE):
 
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
-        f"<@&{BETA_TESTERS_ROLE_ID}>\n"
+        f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
+        f"How did you do??"
         f"**The sentence was:**\n"
         f"*{state['sentence']}*\n\n"
         f"{japanese}\n\n"
-        f"How did you do??"
     )
 
     if original_message:
@@ -298,7 +298,7 @@ async def daily_evening():
     ctx.author.guild_permissions.administrator or
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def test_morning(ctx):
-    await run_morning(TEST_STATE_FILE)
+    await run_morning(TEST_STATE_FILE, BOT_DEV_CHANNEL_ID)
     import asyncio
     await asyncio.sleep(1)
     await ctx.message.delete()
@@ -308,7 +308,7 @@ async def test_morning(ctx):
     ctx.author.guild_permissions.administrator or
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def test_evening(ctx):
-    await run_evening(TEST_STATE_FILE)
+    await run_evening(TEST_STATE_FILE, BOT_DEV_CHANNEL_ID)
     import asyncio
     await asyncio.sleep(1)
     await ctx.message.delete()
