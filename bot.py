@@ -14,6 +14,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 BETA_TESTERS_ROLE_ID = int(os.getenv("BETA_TESTERS_ROLE_ID"))
+BOT_DEV_CHANNEL_ID = int(os.getenv("BOT_DEV_CHANNEL_ID"))
 
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
@@ -293,8 +294,9 @@ async def daily_evening():
 
 
 @bot.command(name="testmorning")
-@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or
-    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles))
+@commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
+    ctx.author.guild_permissions.administrator or
+    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def test_morning(ctx):
     await run_morning(TEST_STATE_FILE)
     import asyncio
@@ -302,8 +304,9 @@ async def test_morning(ctx):
     await ctx.message.delete()
 
 @bot.command(name="testevening")
-@commands.check(lambda ctx: ctx.author.guild_permissions.administrator or
-    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles))
+@commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
+    ctx.author.guild_permissions.administrator or
+    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def test_evening(ctx):
     await run_evening(TEST_STATE_FILE)
     import asyncio
