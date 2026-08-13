@@ -3,4 +3,6 @@ venv/
 __pycache__/
 state.json
 test_state.json
+engagement.json
 .DS_Store
+bot.log
