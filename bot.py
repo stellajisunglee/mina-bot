@@ -384,7 +384,7 @@ def format_reveal(package, focus):
         f"**Reading:**\n{package['reading']}\n\n"
         f"**Romaji:**\n{package['romaji']}\n\n"
         f"**Note:**\n{package['note']}\n\n"
-        f"**Grammar focus: {focus['grammar']}:**\n{package['grammar_focus']}\n\n"
+        f"**Grammar focus: {focus['grammar']}**\n{package['grammar_focus']}\n\n"
         f"**Key words (this morning's spoilers):**\n{key_words}"
     )
 
