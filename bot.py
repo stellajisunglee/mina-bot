@@ -384,7 +384,7 @@ def format_reveal(package, focus):
         f"**Reading:**\n{package['reading']}\n\n"
         f"**Romaji:**\n{package['romaji']}\n\n"
         f"**Note:**\n{package['note']}\n\n"
-        f"**Grammar focus — {focus['grammar']}:**\n{package['grammar_focus']}\n\n"
+        f"**Grammar focus: {focus['grammar']}:**\n{package['grammar_focus']}\n\n"
         f"**Key words (this morning's spoilers):**\n{key_words}"
     )
 
@@ -464,13 +464,12 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
         f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
-        f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n"
+        f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n\n"
         f"**Sentence of the day** ({level_config(focus)['label']}):\n> {sentence}\n\n"
         f"{hint}"
         f"Give each other feedback! If a conversation gets going, start a public thread on this message instead of "
         f"replying in the channel — right-click (or long-press) this message → Create Thread. "
-        f"It keeps everything easy to follow and lets more people join in 🧵\n\n"
-        f"Come back in 12 hours for the reveal 😎\n\n"
+        f"It keeps everything easy to follow and lets more people join in. Come back in 12 hours for the reveal 😎\n\n"
         f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak."
     )
 
