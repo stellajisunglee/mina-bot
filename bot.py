@@ -27,6 +27,7 @@ TEST_STATE_FILE = "test_state.json"
 ENGAGEMENT_FILE = "engagement.json"
 EVENTS_FILE = "events.jsonl"
 CHECKME_DAILY_LIMIT = 5
+CHECKME_HISTORY_LIMIT = 5
 
 JAPANESE_PATTERN = re.compile(r'[぀-ヿ一-鿿]')
 
@@ -396,16 +397,21 @@ def format_reveal(package, focus):
     )
 
 
-def generate_feedback(sentence, attempt):
+def generate_feedback(sentence, attempt, history=()):
+    """Coach one attempt. Earlier attempts this session are replayed so the advice builds on itself."""
+    messages = []
+    for exchange in history:
+        messages.append({"role": "user", "content": exchange["attempt"]})
+        messages.append({"role": "assistant", "content": exchange["feedback"]})
+    messages.append({"role": "user", "content": attempt})
+
     response = client_ai.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=400,
-        messages=[{
-            "role": "user",
-            "content": f"""You are a native Japanese speaker in your 20s living in Tokyo, giving a friend who is learning Japanese quick feedback on their translation attempt.
+        system=f"""You are a native Japanese speaker in your 20s living in Tokyo, giving a friend who is learning Japanese quick feedback on their translation attempts.
 
-The English sentence was: "{sentence}"
-Their Japanese attempt: "{attempt}"
+They are translating this English sentence: "{sentence}"
+Every message they send is another attempt at that same sentence.
 
 Rules:
 - Write your feedback in English. You can quote specific Japanese words or phrases (in Japanese script) when pointing something out, but all explanations and commentary must be in English so an English-speaking learner can follow them.
@@ -415,8 +421,14 @@ Rules:
 - If there's a more natural way to say it, give that phrasing in Japanese with a quick English gloss.
 - Keep the tone warm and casual, like an encouraging friend, not a teacher.
 - Keep it short — a few sentences, not an essay.
-- Do not use headers or markdown formatting like the translation reveal does — just write it as a short, natural message."""
-        }]
+- Do not use headers or markdown formatting like the translation reveal does — just write it as a short, natural message.
+
+When they have already sent earlier attempts above:
+- Respond to their newest attempt in light of the feedback you already gave.
+- Call out specifically what they fixed since last time, and do not repeat advice they have already acted on.
+- Focus on what is still off. If something you flagged before is still wrong, say so directly and try explaining it a different way than you did the first time.
+- If the attempt is now natural and correct, tell them plainly that they have got it rather than inventing new nitpicks.""",
+        messages=messages
     )
     return response.content[0].text.strip()
 
@@ -565,16 +577,28 @@ async def test_evening(ctx):
     await ctx.message.delete()
 
 
-def get_current_sentence():
+def current_state_file():
+    """The state file for the session that is live right now, test or real."""
     candidates = [f for f in (STATE_FILE, TEST_STATE_FILE) if os.path.exists(f)]
     if not candidates:
         return None
-    latest_file = max(candidates, key=os.path.getmtime)
-    return load_state(latest_file).get("sentence")
+    return max(candidates, key=os.path.getmtime)
+
+
+def append_checkme_exchange(state_file, user_id, attempt, feedback):
+    """Record one attempt/feedback pair for this session. Cleared by the next morning drop."""
+    state = load_state(state_file)
+    history = state.setdefault("checkme_history", {})
+    exchanges = history.get(str(user_id), [])
+    exchanges.append({"attempt": attempt, "feedback": feedback})
+    history[str(user_id)] = exchanges[-CHECKME_HISTORY_LIMIT:]
+    save_state(state, state_file)
 
 
 async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
-    sentence = get_current_sentence()
+    state_file = current_state_file()
+    state = load_state(state_file) if state_file else {}
+    sentence = state.get("sentence")
     if not sentence:
         await interaction.followup.send("No sentence live right now — check back after the morning drop! 🌅", ephemeral=True)
         return
@@ -586,12 +610,14 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
         )
         return
 
-    feedback = generate_feedback(sentence, attempt)
+    history = state.get("checkme_history", {}).get(str(interaction.user.id), [])
+    feedback = generate_feedback(sentence, attempt, history)
     await interaction.followup.send(feedback, ephemeral=True)
 
+    append_checkme_exchange(state_file, interaction.user.id, attempt, feedback)
     record_participation(interaction.user.id)
     record_checkme_usage(interaction.user.id)
-    log_event("checkme", interaction.user.id)
+    log_event("checkme", interaction.user.id, exchange=len(history) + 1)
 
 
 @bot.tree.context_menu(name="Check my Japanese")
