@@ -229,9 +229,16 @@ def default_user():
     }
 
 
+def get_user(data, user_id):
+    """Fetch a user record, backfilling any fields added since it was created."""
+    user = {**default_user(), **data["users"].get(str(user_id), {})}
+    data["users"][str(user_id)] = user
+    return user
+
+
 def record_participation(user_id):
     data = load_engagement()
-    user = data["users"].setdefault(str(user_id), default_user())
+    user = get_user(data, user_id)
 
     today = date.fromisoformat(today_str())
     last = date.fromisoformat(user["last_participated"]) if user["last_participated"] else None
@@ -254,18 +261,18 @@ def record_participation(user_id):
 
 def checkme_count_today(user_id):
     data = load_engagement()
-    user = data["users"].get(str(user_id))
-    if not user or user.get("checkme_last_date") != today_str():
+    user = get_user(data, user_id)
+    if user["checkme_last_date"] != today_str():
         return 0
-    return user.get("checkme_count_today", 0)
+    return user["checkme_count_today"]
 
 
 def record_checkme_usage(user_id):
     data = load_engagement()
-    user = data["users"].setdefault(str(user_id), default_user())
+    user = get_user(data, user_id)
     today = today_str()
 
-    if user.get("checkme_last_date") != today:
+    if user["checkme_last_date"] != today:
         user["checkme_last_date"] = today
         user["checkme_count_today"] = 0
 
@@ -608,8 +615,8 @@ async def streak(interaction: discord.Interaction):
     log_event("streak_check", interaction.user.id)
 
     data = load_engagement()
-    user = data["users"].get(str(interaction.user.id))
-    if not user or user["total_days"] == 0:
+    user = get_user(data, interaction.user.id)
+    if user["total_days"] == 0:
         await interaction.followup.send("You haven't participated yet — jump into today's sentence to start your streak! 🔥", ephemeral=True)
         return
 
