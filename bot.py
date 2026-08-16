@@ -5,6 +5,7 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 import os
 import json
+import random
 import re
 from datetime import time, datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -28,6 +29,119 @@ EVENTS_FILE = "events.jsonl"
 CHECKME_DAILY_LIMIT = 5
 
 JAPANESE_PATTERN = re.compile(r'[぀-ヿ一-鿿]')
+
+FLUENCY_LEVELS = [
+    {
+        "name": "elementary school",
+        "label": "elementary school level, around JLPT N5",
+        "english": "Short and concrete — one main idea, everyday words, the kind of thing a kid would say to a friend.",
+        "japanese": "Keep the Japanese around JLPT N5: basic particles, simple verb forms, and common everyday vocabulary.",
+        "grammar": [
+            "て-form linking two actions",
+            "〜たい (saying what you want to do)",
+            "〜ませんか / 〜ましょう (inviting or suggesting)",
+            "〜が好き / 〜が上手 (likes and skills marked with が)",
+            "〜ている for something happening right now",
+            "あります / います (saying that something exists)",
+            "plain past tense (〜た)",
+            "〜から (giving a reason)",
+        ],
+    },
+    {
+        "name": "middle school",
+        "label": "middle school level, around JLPT N4",
+        "english": "A full everyday sentence with a little detail — two connected ideas at most, still casual and common.",
+        "japanese": "Keep the Japanese around JLPT N4: everyday compound sentences and common conversational patterns.",
+        "grammar": [
+            "〜たら conditional",
+            "potential form (being able to do something)",
+            "giving and receiving (あげる / くれる / もらう)",
+            "〜てみる (trying something out)",
+            "〜ておく (doing something ahead of time)",
+            "〜なければいけない / 〜なくてもいい (obligation)",
+            "〜と思う (giving your own opinion)",
+            "noun-modifying clauses (relative clauses)",
+            "〜すぎる (doing something too much)",
+            "〜ながら (doing two things at once)",
+        ],
+    },
+    {
+        "name": "high school",
+        "label": "high school level, around JLPT N3",
+        "english": "A more textured sentence — an opinion, a comparison, or a bit of nuance, but still something said out loud in conversation.",
+        "japanese": "Keep the Japanese around JLPT N3: more nuanced connectives and expressions, still fully conversational.",
+        "grammar": [
+            "〜ようになる (a change over time)",
+            "〜ことにする / 〜ことになる (decisions and outcomes)",
+            "〜らしい / 〜みたい (hearsay and resemblance)",
+            "causative form (making or letting someone do something)",
+            "passive form",
+            "〜ば conditional",
+            "〜てしまう (finishing something, or regretting it)",
+            "〜たばかり (having just done something)",
+            "〜そうです (it looks like / I heard that)",
+            "〜のに (even though)",
+        ],
+    },
+    {
+        "name": "college",
+        "label": "college level, around JLPT N2",
+        "english": "An adult, layered sentence — a qualified opinion, a cause and effect, or a comparison with a caveat. Still natural speech, not writing.",
+        "japanese": "Keep the Japanese around JLPT N2: richer connectives and set expressions, while staying conversational.",
+        "grammar": [
+            "〜おかげで / 〜せいで (good and bad causes)",
+            "〜はずだ (what you would expect to be true)",
+            "〜に違いない (being sure about something)",
+            "〜として / 〜にとって (roles and perspectives)",
+            "〜ば〜ほど (the more you do it, the more...)",
+            "〜わけだ (so that explains it)",
+            "causative-passive (being made to do something)",
+            "〜さえ / 〜こそ (emphasis particles)",
+            "〜つもりだった (what you had intended)",
+            "〜ものだ (how things generally are)",
+        ],
+    },
+]
+
+LEVELS_BY_NAME = {level["name"]: level for level in FLUENCY_LEVELS}
+
+VOCAB_THEMES = [
+    "food and cooking", "travel", "fashion", "hobbies", "anime", "movies", "music",
+    "gaming", "pets", "sports", "books", "cafés and coffee", "weather and seasons",
+    "school and work life", "trains and getting around town", "shopping",
+    "exercise and health", "holidays and festivals", "phones and technology",
+    "making plans with friends",
+]
+
+# How many recent picks to avoid reusing, per category
+FOCUS_HISTORY = {"recent_levels": 1, "recent_grammar": 6, "recent_themes": 5}
+
+JAPANESE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "japanese": {"type": "string", "description": "The translation in kanji/kana"},
+        "reading": {"type": "string", "description": "The same sentence in hiragana"},
+        "romaji": {"type": "string", "description": "The same sentence in romaji"},
+        "note": {"type": "string", "description": "At most two sentences on anything nuanced about the phrasing or slang"},
+        "grammar_focus": {"type": "string", "description": "At most two sentences explaining how the day's grammar structure works in this sentence"},
+        "key_words": {
+            "type": "array",
+            "description": "The three words or phrases from the Japanese sentence a learner most needs in order to attempt it",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "word": {"type": "string", "description": "The word in kanji/kana"},
+                    "reading": {"type": "string", "description": "The word in hiragana"},
+                    "meaning": {"type": "string", "description": "A short English gloss, a few words at most"},
+                },
+                "required": ["word", "reading", "meaning"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["japanese", "reading", "romaji", "note", "grammar_focus", "key_words"],
+    "additionalProperties": False,
+}
 
 client_ai = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -77,6 +191,12 @@ def log_event(event_type, user_id, **extra):
 
 def contains_japanese(text):
     return bool(JAPANESE_PATTERN.search(text))
+
+
+def is_voice_message(message):
+    if message.flags.voice:
+        return True
+    return any((a.content_type or "").startswith("audio/") for a in message.attachments)
 
 
 def is_within_active_window():
@@ -158,18 +278,65 @@ def record_checkme_usage(user_id):
     save_engagement(data)
 
 
-def generate_english_sentence():
+def pick_fresh(options, recent):
+    fresh = [option for option in options if option not in recent]
+    return random.choice(fresh or options)
+
+
+def remember(recent, value, limit):
+    return ([item for item in recent if item != value] + [value])[-limit:]
+
+
+def new_focus(recent_levels, recent_grammar, recent_themes):
+    level = LEVELS_BY_NAME[pick_fresh(list(LEVELS_BY_NAME), recent_levels)]
+    return {
+        "level": level["name"],
+        "grammar": pick_fresh(level["grammar"], recent_grammar),
+        "theme": pick_fresh(VOCAB_THEMES, recent_themes),
+    }
+
+
+def pick_daily_focus(state_file):
+    """Pick today's level, grammar point and theme, avoiding the most recent picks."""
+    previous = load_state(state_file)
+    levels = previous.get("recent_levels", [])
+    grammar = previous.get("recent_grammar", [])
+    themes = previous.get("recent_themes", [])
+
+    focus = new_focus(levels, grammar, themes)
+    history = {
+        "recent_levels": remember(levels, focus["level"], FOCUS_HISTORY["recent_levels"]),
+        "recent_grammar": remember(grammar, focus["grammar"], FOCUS_HISTORY["recent_grammar"]),
+        "recent_themes": remember(themes, focus["theme"], FOCUS_HISTORY["recent_themes"]),
+    }
+    return focus, history
+
+
+def level_config(focus):
+    return LEVELS_BY_NAME.get(focus.get("level"), FLUENCY_LEVELS[1])
+
+
+def format_key_word(word):
+    kanji = word["word"].strip()
+    reading = word["reading"].strip()
+    head = f"{kanji} ({reading})" if reading and reading != kanji else kanji
+    return f"{head} — {word['meaning'].strip()}"
+
+
+def generate_english_sentence(focus):
+    level = level_config(focus)
     response = client_ai.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=100,
         messages=[{
             "role": "user",
-            "content": """Generate one natural, conversational English sentence for a Japanese learning community to translate.
+            "content": f"""Generate one natural, conversational English sentence for a Japanese learning community to translate.
 
 Rules:
 - It should feel like something a real person would say in daily life.
-- Sentence theme should be either food, travel, fashion, hobbies, anime, movies, music, gaming, pets, sports, or books.
-- Avoid overly simple sentences (not "I eat rice") and keep it accessible to beginner and intermediate learners.
+- The sentence should be about {focus['theme']}.
+- Difficulty: {level['english']}
+- Translated into Japanese, it should naturally call for this grammar structure: {focus['grammar']}. Write the English so that structure is the obvious way to say it, but do NOT mention the grammar point.
 - Do NOT include the Japanese translation
 - Return ONLY the sentence, nothing else"""
         }]
@@ -177,41 +344,49 @@ Rules:
     return response.content[0].text.strip()
 
 
-def generate_japanese_translation(sentence):
+def generate_japanese_package(sentence, focus):
+    """Translate the sentence and pull out the day's grammar note and three key words."""
+    level = level_config(focus)
     response = client_ai.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=400,
+        max_tokens=1200,
+        output_config={"format": {"type": "json_schema", "schema": JAPANESE_SCHEMA}},
         messages=[{
             "role": "user",
-            "content": f"""You are a native Japanese speaker in your 20s living in Tokyo. 
+            "content": f"""You are a native Japanese speaker in your 20s living in Tokyo.
             You made a new friend who came from America and is studying Japanese. They asked you how to say this English sentence in Japanese-
-            how would you naturally say it in Japanese? It should be at the N5, N4, or N3 level.
+            how would you naturally say it in Japanese?
             "{sentence}"
 
 Rules:
 - Write exactly how you would say it out loud to a new friend you just made, not how you would say it to a friend you have known for many years nor how a textbook would phrase it.
+- {level['japanese']}
+- Use this grammar structure in the translation: {focus['grammar']}.
 - Do NOT use contractions like んだ、ちゃう、てる, etc.
 - Do NOT end sentences with よね、かな、じゃん、けど etc. unless it is the number one most prevalent way to say that sentence in Japan.
 - If there are multiple natural ways to say it, pick the most conversational one.
 - Avoid でございます、～いたします or any keigo unless the sentence specifically calls for it.
-- Provide the Japanese in three forms: kanji/kana, hiragana reading, and romaji.
-- Add a maximum two-sentence note explaining anything nuanced about the phrasing or any slang used.
-- Format exactly like this:
-
-**Japanese:**
-[kanji/kana version]
-
-**Reading:**
-[hiragana]
-
-**Romaji:**
-[romaji]
-
-**Note:**
-[short cultural or nuance note]"""
+- For "note", write at most two sentences explaining anything nuanced about the phrasing or any slang used.
+- For "grammar_focus", write at most two sentences explaining how {focus['grammar']} works in this sentence, in English.
+- For "key_words", give exactly three words or phrases that appear in your translation — the ones a learner would most need to attempt this sentence themselves. Keep the meanings to a few words each."""
         }]
     )
-    return response.content[0].text.strip()
+    text = next(block.text for block in response.content if block.type == "text")
+    package = json.loads(text)
+    package["key_words"] = package["key_words"][:3]
+    return package
+
+
+def format_reveal(package, focus):
+    key_words = "\n".join(f"- {format_key_word(word)}" for word in package["key_words"])
+    return (
+        f"**Japanese:**\n{package['japanese']}\n\n"
+        f"**Reading:**\n{package['reading']}\n\n"
+        f"**Romaji:**\n{package['romaji']}\n\n"
+        f"**Note:**\n{package['note']}\n\n"
+        f"**Grammar focus — {focus['grammar']}:**\n{package['grammar_focus']}\n\n"
+        f"**Key words (this morning's spoilers):**\n{key_words}"
+    )
 
 
 def generate_feedback(sentence, attempt):
@@ -258,10 +433,11 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if (not message.author.bot and message.channel.id == CHANNEL_ID
-            and contains_japanese(message.content) and is_within_active_window()):
-        record_participation(message.author.id)
-        log_event("participation", message.author.id)
+    if not message.author.bot and message.channel.id == CHANNEL_ID and is_within_active_window():
+        voice = is_voice_message(message)
+        if voice or contains_japanese(message.content):
+            record_participation(message.author.id)
+            log_event("participation", message.author.id, method="voice" if voice else "text")
     await bot.process_commands(message)
 
 
@@ -271,25 +447,46 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
         print("Channel not found")
         return
 
-    sentence = generate_english_sentence()
+    focus, history = pick_daily_focus(state_file)
+    sentence = generate_english_sentence(focus)
+
+    try:
+        package = generate_japanese_package(sentence, focus)
+    except Exception as error:
+        package = None
+        print(f"Could not prepare the reveal this morning, will generate it tonight: {error}")
+
+    hint = ""
+    if package:
+        spoilers = "\n".join(f"||{format_key_word(word)}||" for word in package["key_words"])
+        hint = f"**New here? Tap a spoiler for a head start:**\n{spoilers}\n\n"
 
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
         f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n"
-        f"**Sentence of the day:**\n> {sentence}\n\n"
-        f"Give each other feedback and come back in 12 hours for the reveal 😎\n\n"
+        f"**Sentence of the day** ({level_config(focus)['label']}):\n> {sentence}\n\n"
+        f"{hint}"
+        f"Give each other feedback! If a conversation gets going, start a public thread on this message instead of "
+        f"replying in the channel — right-click (or long-press) this message → Create Thread. "
+        f"It keeps everything easy to follow and lets more people join in 🧵\n\n"
+        f"Come back in 12 hours for the reveal 😎\n\n"
         f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak."
     )
 
-    save_state({
+    state = {
         "sentence": sentence,
         "message_id": message.id,
-        "posted_at": datetime.now(TIMEZONE).isoformat()
-    }, state_file)
+        "posted_at": datetime.now(TIMEZONE).isoformat(),
+        "focus": focus,
+    }
+    if package:
+        state["japanese"] = package
+    state.update(history)
+    save_state(state, state_file)
 
-    log_event("morning_posted", None, sentence=sentence, channel_id=channel_id)
-    print(f"Morning drop sent: {sentence}")
+    log_event("morning_posted", None, sentence=sentence, channel_id=channel_id, **focus)
+    print(f"Morning drop sent ({focus['level']}, {focus['theme']}, {focus['grammar']}): {sentence}")
 
 
 async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
@@ -307,7 +504,8 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     except discord.NotFound:
         original_message = None
 
-    japanese = generate_japanese_translation(state["sentence"])
+    focus = state.get("focus") or new_focus([], [], [])
+    package = state.get("japanese") or generate_japanese_package(state["sentence"], focus)
 
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
@@ -315,7 +513,7 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
         f"How did you do??\n\n"
         f"**The sentence was:**\n"
         f"*{state['sentence']}*\n\n"
-        f"{japanese}\n\n"
+        f"{format_reveal(package, focus)}\n\n"
     )
 
     if original_message:
@@ -326,7 +524,7 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     state["revealed_at"] = datetime.now(TIMEZONE).isoformat()
     save_state(state, state_file)
 
-    log_event("evening_revealed", None, sentence=state["sentence"], channel_id=channel_id)
+    log_event("evening_revealed", None, sentence=state["sentence"], channel_id=channel_id, **focus)
     print("Evening reveal sent")
 
 
