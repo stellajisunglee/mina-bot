@@ -417,7 +417,8 @@ Rules:
 - Write your feedback in English. You can quote specific Japanese words or phrases (in Japanese script) when pointing something out, but all explanations and commentary must be in English so an English-speaking learner can follow them.
 - Be accurate. Do not soften or hide real grammar or word-choice errors, but frame everything as encouraging coaching, not grading.
 - Start by naming what they got right, specifically (not just "good job").
-- Then point out any real errors or unnatural phrasing, and briefly explain why.
+- Raise something only when it is an actual error or would genuinely sound off to a native ear. A phrasing that is merely different from how you would say it is not an error, and neither is a stylistic preference.
+- Re-read their attempt before suggesting a change, and make sure it does not already say what you are about to suggest.
 - If there's a more natural way to say it, give that phrasing in Japanese with a quick English gloss.
 - Keep the tone warm and casual, like an encouraging friend, not a teacher.
 - Keep it short — a few sentences, not an essay.
@@ -425,9 +426,10 @@ Rules:
 
 When they have already sent earlier attempts above:
 - Respond to their newest attempt in light of the feedback you already gave.
-- Call out specifically what they fixed since last time, and do not repeat advice they have already acted on.
-- Focus on what is still off. If something you flagged before is still wrong, say so directly and try explaining it a different way than you did the first time.
-- If the attempt is now natural and correct, tell them plainly that they have got it rather than inventing new nitpicks.""",
+- Stay consistent with yourself. Never walk back or contradict advice you gave earlier in this conversation. If they changed something because you told them to, that change is settled — do not question it, re-open it, or suggest reverting toward their earlier wording.
+- If their new attempt follows what you recommended, say so and leave it alone.
+- Do not repeat advice they have already acted on. If something you flagged before is still wrong, say so directly and try explaining it a different way than you did the first time.
+- If the attempt now sounds natural, say plainly that they have got it and stop there. Do not go looking for something else to correct — "this works, you've got it" is a complete and useful answer, and manufacturing a nitpick to seem thorough makes the feedback worse.""",
         messages=messages
     )
     return response.content[0].text.strip()
@@ -590,9 +592,39 @@ def append_checkme_exchange(state_file, user_id, attempt, feedback):
     state = load_state(state_file)
     history = state.setdefault("checkme_history", {})
     exchanges = history.get(str(user_id), [])
-    exchanges.append({"attempt": attempt, "feedback": feedback})
+    exchanges.append({
+        "attempt": attempt,
+        "feedback": feedback,
+        "at": datetime.now(TIMEZONE).isoformat(),
+    })
     history[str(user_id)] = exchanges[-CHECKME_HISTORY_LIMIT:]
     save_state(state, state_file)
+
+
+def session_history(state, user_id):
+    """Only the exchanges from the live window between this morning's drop and its reveal."""
+    posted_at = state.get("posted_at")
+    if not posted_at:
+        return []
+
+    start = datetime.fromisoformat(posted_at)
+    revealed_at = state.get("revealed_at")
+    end = datetime.fromisoformat(revealed_at) if revealed_at else None
+
+    now = datetime.now(TIMEZONE)
+    if now < start or (end and now >= end):
+        return []
+
+    window = []
+    for exchange in state.get("checkme_history", {}).get(str(user_id), []):
+        at = exchange.get("at")
+        if not at:
+            continue
+        moment = datetime.fromisoformat(at)
+        if moment < start or (end and moment >= end):
+            continue
+        window.append(exchange)
+    return window
 
 
 async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
@@ -610,7 +642,7 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
         )
         return
 
-    history = state.get("checkme_history", {}).get(str(interaction.user.id), [])
+    history = session_history(state, interaction.user.id)
     feedback = generate_feedback(sentence, attempt, history)
     await interaction.followup.send(feedback, ephemeral=True)
 
