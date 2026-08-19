@@ -15,8 +15,8 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-BETA_TESTERS_ROLE_ID = int(os.getenv("BETA_TESTERS_ROLE_ID"))
-BOT_DEV_CHANNEL_ID = int(os.getenv("BOT_DEV_CHANNEL_ID"))
+KAIWA_CREW_ROLE_ID = int(os.getenv("KAIWA_CREW_ROLE_ID"))
+MINA_BOT_CHANNEL_ID = int(os.getenv("MINA_BOT_CHANNEL_ID"))
 
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
@@ -120,10 +120,13 @@ FOCUS_HISTORY = {"recent_levels": 1, "recent_grammar": 6, "recent_themes": 5}
 JAPANESE_SCHEMA = {
     "type": "object",
     "properties": {
-        "japanese": {"type": "string", "description": "The translation in kanji/kana"},
+        "japanese": {"type": "string", "description": "The casual, conversational translation in kanji/kana"},
         "reading": {"type": "string", "description": "The same sentence in hiragana"},
         "romaji": {"type": "string", "description": "The same sentence in romaji"},
-        "note": {"type": "string", "description": "At most two sentences on anything nuanced about the phrasing or slang"},
+        "note": {
+            "type": "string",
+            "description": "At most two sentences on anything nuanced about the phrasing. If the casual translation uses slang, explicitly call it out as slang here.",
+        },
         "grammar_focus": {"type": "string", "description": "At most two sentences explaining how the day's grammar structure works in this sentence"},
         "key_words": {
             "type": "array",
@@ -139,8 +142,19 @@ JAPANESE_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "formal": {
+            "type": "object",
+            "description": "The same sentence in basic formal/polite Japanese (keigo)",
+            "properties": {
+                "japanese": {"type": "string", "description": "The formal translation in kanji/kana"},
+                "reading": {"type": "string", "description": "The formal sentence in hiragana"},
+                "romaji": {"type": "string", "description": "The formal sentence in romaji"},
+            },
+            "required": ["japanese", "reading", "romaji"],
+            "additionalProperties": False,
+        },
     },
-    "required": ["japanese", "reading", "romaji", "note", "grammar_focus", "key_words"],
+    "required": ["japanese", "reading", "romaji", "note", "grammar_focus", "key_words", "formal"],
     "additionalProperties": False,
 }
 
@@ -374,9 +388,10 @@ Rules:
 - Do NOT end sentences with よね、かな、じゃん、けど etc. unless it is the number one most prevalent way to say that sentence in Japan.
 - If there are multiple natural ways to say it, pick the most conversational one.
 - Avoid でございます、～いたします or any keigo unless the sentence specifically calls for it.
-- For "note", write at most two sentences explaining anything nuanced about the phrasing or any slang used.
+- For "note", write at most two sentences explaining anything nuanced about the phrasing. If any word or phrase you used is slang, explicitly say so.
 - For "grammar_focus", write at most two sentences explaining how {focus['grammar']} works in this sentence, in English.
-- For "key_words", give exactly three words or phrases that appear in your translation — the ones a learner would most need to attempt this sentence themselves. Keep the meanings to a few words each."""
+- For "key_words", give exactly three words or phrases that appear in your translation — the ones a learner would most need to attempt this sentence themselves. Keep the meanings to a few words each.
+- For "formal", give the same sentence in basic formal/polite Japanese (keigo) — the way you'd say it to a stranger, a customer, or someone senior to you. Keep it to standard です/ます-level politeness, not the most elaborate keigo possible."""
         }]
     )
     text = next(block.text for block in response.content if block.type == "text")
@@ -387,11 +402,15 @@ Rules:
 
 def format_reveal(package, focus):
     key_words = "\n".join(f"- {format_key_word(word)}" for word in package["key_words"])
+    formal = package["formal"]
     return (
-        f"**Japanese:**\n{package['japanese']}\n\n"
+        f"**🗣️ Casual Japanese:**\n{package['japanese']}\n\n"
         f"**Reading:**\n{package['reading']}\n\n"
         f"**Romaji:**\n{package['romaji']}\n\n"
         f"**Note:**\n{package['note']}\n\n"
+        f"**🙇 Formal Japanese (keigo):**\n{formal['japanese']}\n\n"
+        f"**Reading:**\n{formal['reading']}\n\n"
+        f"**Romaji:**\n{formal['romaji']}\n\n"
         f"**Grammar focus: {focus['grammar']}**\n{package['grammar_focus']}\n\n"
         f"**Key words (this morning's spoilers):**\n{key_words}"
     )
@@ -418,7 +437,7 @@ Rules:
 - Be accurate. Do not soften or hide real grammar or word-choice errors, but frame everything as encouraging coaching, not grading.
 - Start by naming what they got right, specifically (not just "good job").
 - Raise something only when it is an actual error or would genuinely sound off to a native ear. A phrasing that is merely different from how you would say it is not an error, and neither is a stylistic preference.
-- Re-read their attempt before suggesting a change, and make sure it does not already say what you are about to suggest.
+- Re-read their attempt before suggesting a change, and make sure it does not already say what you are about to suggest. DO NOT HALLUCINATE.
 - If there's a more natural way to say it, give that phrasing in Japanese with a quick English gloss.
 - Keep the tone warm and casual, like an encouraging friend, not a teacher.
 - Keep it short — a few sentences, not an essay.
@@ -484,7 +503,7 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
 
     message = await channel.send(
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
-        f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
+        f"Hi <@&{KAIWA_CREW_ROLE_ID}> !!\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n\n"
         f"**Sentence of the day** ({level_config(focus)['label']}):\n> {sentence}\n\n"
         f"{hint}"
@@ -492,6 +511,7 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
         f"replying in the channel — right-click (or long-press) this message → Create Thread. "
         f"It keeps everything easy to follow and lets more people join in. Come back in 12 hours for the reveal 😎\n\n"
         f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak."
+        f"-# Share feedback: <https://tally.so/r/dWGyZV>"
     )
 
     state = {
@@ -529,11 +549,12 @@ async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
 
     reveal_text = (
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
-        f"Hi <@&{BETA_TESTERS_ROLE_ID}> !!\n"
+        f"Hi <@&{KAIWA_CREW_ROLE_ID}> !!\n"
         f"How did you do??\n\n"
         f"**The sentence was:**\n"
         f"*{state['sentence']}*\n\n"
         f"{format_reveal(package, focus)}\n\n"
+        f"-# Share feedback: <https://tally.so/r/dWGyZV>"
     )
 
     if original_message:
