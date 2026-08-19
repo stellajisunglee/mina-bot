@@ -14,9 +14,9 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 KAIWA_CREW_ROLE_ID = int(os.getenv("KAIWA_CREW_ROLE_ID"))
 MINA_BOT_CHANNEL_ID = int(os.getenv("MINA_BOT_CHANNEL_ID"))
+BOT_DEV_CHANNEL_ID = int(os.getenv("BOT_DEV_CHANNEL_ID"))
 
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
@@ -404,12 +404,12 @@ def format_reveal(package, focus):
     key_words = "\n".join(f"- {format_key_word(word)}" for word in package["key_words"])
     formal = package["formal"]
     return (
-        f"**🗣️ Casual Japanese:**\n{package['japanese']}\n\n"
-        f"**Reading:**\n{package['reading']}\n\n"
-        f"**Romaji:**\n{package['romaji']}\n\n"
+        f"**🗣️ Casual Japanese:**\n{package['japanese']}\n"
+        f"**Hiragana:**\n{package['reading']}\n"
+        f"**Romaji:**\n{package['romaji']}\n"
         f"**Note:**\n{package['note']}\n\n"
-        f"**🙇 Formal Japanese (keigo):**\n{formal['japanese']}\n\n"
-        f"**Reading:**\n{formal['reading']}\n\n"
+        f"**🙇 Formal Japanese:**\n{formal['japanese']}\n"
+        f"**Hiragana:**\n{formal['reading']}\n"
         f"**Romaji:**\n{formal['romaji']}\n\n"
         f"**Grammar focus: {focus['grammar']}**\n{package['grammar_focus']}\n\n"
         f"**Key words (this morning's spoilers):**\n{key_words}"
@@ -462,7 +462,7 @@ async def on_ready():
     global _commands_synced
     print(f"Logged in as {bot.user}")
     if not _commands_synced:
-        channel = bot.get_channel(CHANNEL_ID)
+        channel = bot.get_channel(MINA_BOT_CHANNEL_ID)
         if channel:
             bot.tree.copy_global_to(guild=channel.guild)
             await bot.tree.sync(guild=channel.guild)
@@ -473,7 +473,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if not message.author.bot and message.channel.id == CHANNEL_ID and is_within_active_window():
+    if not message.author.bot and message.channel.id == MINA_BOT_CHANNEL_ID and is_within_active_window():
         voice = is_voice_message(message)
         if voice or contains_japanese(message.content):
             record_participation(message.author.id)
@@ -481,7 +481,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 
-async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
+async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
     channel = bot.get_channel(channel_id)
     if not channel:
         print("Channel not found")
@@ -529,7 +529,7 @@ async def run_morning(state_file=STATE_FILE, channel_id=CHANNEL_ID):
     print(f"Morning drop sent ({focus['level']}, {focus['theme']}, {focus['grammar']}): {sentence}")
 
 
-async def run_evening(state_file=STATE_FILE, channel_id=CHANNEL_ID):
+async def run_evening(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
     state = load_state(state_file)
     if not state:
         print("No state found for evening reveal")
@@ -676,6 +676,10 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
 @bot.tree.context_menu(name="Check my Japanese")
 async def checkme_context(interaction: discord.Interaction, message: discord.Message):
     await interaction.response.defer(ephemeral=True)
+
+    if message.channel.id != MINA_BOT_CHANNEL_ID:
+        await interaction.followup.send(f"This only works on attempts posted in <#{MINA_BOT_CHANNEL_ID}>!", ephemeral=True)
+        return
 
     if message.author.id != interaction.user.id:
         await interaction.followup.send("You can only check your own attempts this way!", ephemeral=True)
