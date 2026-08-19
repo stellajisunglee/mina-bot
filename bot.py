@@ -510,7 +510,7 @@ async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
         f"Give each other feedback! If a conversation gets going, start a public thread on this message instead of "
         f"replying in the channel — right-click (or long-press) this message → Create Thread. "
         f"It keeps everything easy to follow and lets more people join in. Come back in 12 hours for the reveal 😎\n\n"
-        f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak."
+        f"-# Want private feedback on your attempt? Right-click (or long-press) your message → Apps → Check my Japanese. Type `/streak` to see your streak.\n"
         f"-# Share feedback: <https://tally.so/r/dWGyZV>"
     )
 
