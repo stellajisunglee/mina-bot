@@ -7,6 +7,7 @@ import os
 import json
 import random
 import re
+import traceback
 from datetime import time, datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
@@ -571,12 +572,20 @@ async def run_evening(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
 
 @tasks.loop(time=MORNING_TIME)
 async def daily_morning():
-    await run_morning(STATE_FILE)
+    try:
+        await run_morning(STATE_FILE)
+    except Exception:
+        print("Morning drop failed:")
+        traceback.print_exc()
 
 
 @tasks.loop(time=EVENING_TIME)
 async def daily_evening():
-    await run_evening(STATE_FILE)
+    try:
+        await run_evening(STATE_FILE)
+    except Exception:
+        print("Evening reveal failed:")
+        traceback.print_exc()
 
 
 @bot.command(name="testmorning")
