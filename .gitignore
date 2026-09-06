@@ -5,5 +5,7 @@ state.json
 test_state.json
 engagement.json
 events.jsonl
+submissions.jsonl
+metrics.jsonl
 .DS_Store
 bot.log
