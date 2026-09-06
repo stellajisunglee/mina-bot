@@ -170,6 +170,7 @@ client_ai = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
@@ -510,37 +511,50 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if not message.author.bot and message.channel.id in (MINA_BOT_CHANNEL_ID, BOT_DEV_CHANNEL_ID):
-        is_test = message.channel.id == BOT_DEV_CHANNEL_ID
-        state = load_state(state_file_for_channel(message.channel.id))
-        if is_within_active_window(state):
-            voice = is_voice_message(message)
-            if voice or contains_japanese(message.content):
-                if not is_test:
-                    record_participation(message.author.id)
-                    log_event("participation", message.author.id, method="voice" if voice else "text")
+    if not message.author.bot:
+        if message.channel.id in (MINA_BOT_CHANNEL_ID, BOT_DEV_CHANNEL_ID):
+            is_test = message.channel.id == BOT_DEV_CHANNEL_ID
+            state = load_state(state_file_for_channel(message.channel.id))
+            if is_within_active_window(state):
+                voice = is_voice_message(message)
+                if voice or contains_japanese(message.content):
+                    if not is_test:
+                        record_participation(message.author.id)
+                        log_event("participation", message.author.id, method="voice" if voice else "text")
 
-                focus = state.get("focus") or {}
-                attachment = message.attachments[0] if voice and message.attachments else None
-                # Discord CDN attachment URLs expire in ~24h; kept alongside the downloaded copy.
-                content = attachment.url if attachment else message.content
-                voice_path = await save_voice_attachment(attachment, message.author.id) if attachment else None
-                storage.append_submission(
-                    message.author.id, "public_attempt", is_test,
-                    content=content, is_voice=voice, voice_path=voice_path, focus=focus,
-                )
-                storage.append_metrics(
-                    message.author.id, is_test,
-                    type="public_attempt",
-                    level=focus.get("level"),
-                    grammar=focus.get("grammar"),
-                    theme=focus.get("theme"),
-                    char_count=None if voice else len(message.content),
-                    japanese_char_count=None if voice else len(JAPANESE_PATTERN.findall(message.content)),
-                    is_voice=voice,
-                    duration_secs=getattr(attachment, "duration_secs", None) if attachment else None,
-                    file_size_bytes=attachment.size if attachment else None,
-                )
+                    focus = state.get("focus") or {}
+                    attachment = message.attachments[0] if voice and message.attachments else None
+                    # Discord CDN attachment URLs expire in ~24h; kept alongside the downloaded copy.
+                    content = attachment.url if attachment else message.content
+                    voice_path = await save_voice_attachment(attachment, message.author.id) if attachment else None
+                    storage.append_submission(
+                        message.author.id, "public_attempt", is_test,
+                        content=content, is_voice=voice, voice_path=voice_path, focus=focus,
+                        message_id=message.id,
+                    )
+                    storage.append_metrics(
+                        message.author.id, is_test,
+                        type="public_attempt",
+                        level=focus.get("level"),
+                        grammar=focus.get("grammar"),
+                        theme=focus.get("theme"),
+                        char_count=None if voice else len(message.content),
+                        japanese_char_count=None if voice else len(JAPANESE_PATTERN.findall(message.content)),
+                        is_voice=voice,
+                        duration_secs=getattr(attachment, "duration_secs", None) if attachment else None,
+                        file_size_bytes=attachment.size if attachment else None,
+                        message_id=message.id,
+                    )
+        elif message.guild is not None and is_voice_message(message):
+            # Presence-only logging for channels people didn't join to have their messages measured in:
+            # no content, no submissions row, no voice download.
+            storage.append_metrics(
+                message.author.id, False,
+                channel_id=message.channel.id,
+                channel_name=getattr(message.channel, "name", None),
+                is_voice=True,
+                message_id=message.id,
+            )
     await bot.process_commands(message)
 
 
@@ -557,6 +571,14 @@ async def send_long_message(channel, text, limit=2000):
             chunk = candidate
     if chunk:
         await channel.send(chunk)
+
+
+async def count_unlocked_members(guild):
+    """Human members with any role beyond the implicit @everyone."""
+    members = guild.members
+    if not members:
+        members = [m async for m in guild.fetch_members(limit=None)]
+    return sum(1 for m in members if not m.bot and len(m.roles) > 1)
 
 
 async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
@@ -671,7 +693,12 @@ async def run_weekly_report(channel_id=REPORTS_CHANNEL_ID):
         print("Reports channel not found")
         return
     level_labels = {name: cfg["label"] for name, cfg in LEVELS_BY_NAME.items()}
-    await send_long_message(channel, metrics_report.build_report(level_labels=level_labels))
+    unlocked_member_count = await count_unlocked_members(channel.guild)
+    await send_long_message(channel, metrics_report.build_report(
+        level_labels=level_labels,
+        switchover_date=LEVEL_LABEL_MOVED_TO_EVENING,
+        unlocked_member_count=unlocked_member_count,
+    ))
 
 
 @tasks.loop(time=REPORT_TIME)
@@ -705,8 +732,9 @@ async def test_evening(ctx):
     await asyncio.sleep(1)
     await ctx.message.delete()
 
+# Pattern for future report commands: gate on REPORTS_CHANNEL_ID, same admin/mod check.
 @bot.command(name="weeklyreport")
-@commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
+@commands.check(lambda ctx: ctx.channel.id == REPORTS_CHANNEL_ID and (
     ctx.author.guild_permissions.administrator or
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def weeklyreport(ctx):
