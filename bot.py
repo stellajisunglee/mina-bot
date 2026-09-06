@@ -32,6 +32,7 @@ CHECKME_DAILY_LIMIT = 5
 CHECKME_HISTORY_LIMIT = 5
 VOICE_DIR = "voice"
 VOICE_MAX_BYTES = 10 * 1024 * 1024
+LEVEL_LABEL_MOVED_TO_EVENING = "2026-09-06"  # before this date the level label was on the morning message; from this date it's on the evening reveal instead
 
 JAPANESE_PATTERN = re.compile(r'[぀-ヿ一-鿿]')
 
@@ -560,7 +561,7 @@ async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
         f"# 🌟 SAY IT IN JAPANESE 🌟\n\n"
         f"Hi <@&{KAIWA_CREW_ROLE_ID}> !!\n"
         f"How would you say this sentence in Japanese? Send a quick voice memo or drop your translation below\n\n"
-        f"**Sentence of the day** ({level_config(focus)['label']}):\n> {sentence}\n\n"
+        f"**Sentence of the day:**\n> {sentence}\n\n"
         f"{hint}"
         f"Give each other feedback! If a conversation gets going, start a public thread on this message instead of "
         f"replying in the channel — right-click (or long-press) this message → Create Thread. "
@@ -606,7 +607,7 @@ async def run_evening(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
         f"# ✨ TRANSLATION REVEAL ✨\n\n"
         f"Hi <@&{KAIWA_CREW_ROLE_ID}> !!\n"
         f"How did you do??\n\n"
-        f"**The sentence was:**\n"
+        f"**The sentence was** ({level_config(focus)['label']}):\n"
         f"*{state['sentence']}*\n\n"
         f"{format_reveal(package, focus)}\n\n"
         f"-# Share feedback: <https://tally.so/r/dWGyZV>"
@@ -830,4 +831,5 @@ async def checkme_stats(interaction: discord.Interaction):
     )
 
 
-bot.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    bot.run(DISCORD_TOKEN)
