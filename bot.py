@@ -110,8 +110,8 @@ LEVELS_BY_NAME = {level["name"]: level for level in FLUENCY_LEVELS}
 VOCAB_THEMES = [
     "food and cooking", "travel", "fashion", "hobbies", "anime", "movies", "music",
     "gaming", "pets", "sports", "books", "cafés and coffee", "weather and seasons",
-    "school and work life", "trains and getting around town", "shopping",
-    "exercise and health", "holidays and festivals", "phones and technology",
+    "school", "work life", "getting around town", "shopping","family", "relationships", "emotions", "daily routines",
+    "exercise", "health", "holidays and festivals", "phones and technology",
     "making plans with friends",
 ]
 
@@ -215,8 +215,11 @@ def is_voice_message(message):
     return any((a.content_type or "").startswith("audio/") for a in message.attachments)
 
 
-def is_within_active_window():
-    state = load_state(STATE_FILE)
+def is_within_active_window(state=None):
+    """True while today's sentence is live: after the morning drop, before the reveal."""
+    if state is None:
+        state = load_state(STATE_FILE)
+
     posted_at = state.get("posted_at")
     if not posted_at:
         return False
@@ -378,7 +381,7 @@ def generate_japanese_package(sentence, focus):
             "role": "user",
             "content": f"""You are a native Japanese speaker in your 20s living in Tokyo.
             You made a new friend who came from America and is studying Japanese. They asked you how to say this English sentence in Japanese-
-            how would you naturally say it in Japanese?
+            how would you say it in natural Japanese?
             "{sentence}"
 
 Rules:
@@ -436,9 +439,10 @@ Every message they send is another attempt at that same sentence.
 Rules:
 - Write your feedback in English. You can quote specific Japanese words or phrases (in Japanese script) when pointing something out, but all explanations and commentary must be in English so an English-speaking learner can follow them.
 - Be accurate. Do not soften or hide real grammar or word-choice errors, but frame everything as encouraging coaching, not grading.
-- Start by naming what they got right, specifically (not just "good job").
-- Raise something only when it is an actual error or would genuinely sound off to a native ear. A phrasing that is merely different from how you would say it is not an error, and neither is a stylistic preference.
-- Re-read their attempt before suggesting a change, and make sure it does not already say what you are about to suggest. DO NOT HALLUCINATE.
+- Start by naming what they did well, specifically (not just "good job").
+- Raise something only when it is an actual error or would genuinely sound off to a native ear. A phrasing that is merely different from how you would say it is not an error, and neither is a stylistic preference. Successful communication and expression of the user takes priority when evaluating accuracy.
+- Re-read their attempt before suggesting a change, and make sure it does not already say what you are about to suggest. 
+- DO NOT HALLUCINATE.
 - If there's a more natural way to say it, give that phrasing in Japanese with a quick English gloss.
 - Keep the tone warm and casual, like an encouraging friend, not a teacher.
 - Keep it short — a few sentences, not an essay.
@@ -609,14 +613,6 @@ async def test_evening(ctx):
     await ctx.message.delete()
 
 
-def current_state_file():
-    """The state file for the session that is live right now, test or real."""
-    candidates = [f for f in (STATE_FILE, TEST_STATE_FILE) if os.path.exists(f)]
-    if not candidates:
-        return None
-    return max(candidates, key=os.path.getmtime)
-
-
 def append_checkme_exchange(state_file, user_id, attempt, feedback):
     """Record one attempt/feedback pair for this session. Cleared by the next morning drop."""
     state = load_state(state_file)
@@ -658,11 +654,10 @@ def session_history(state, user_id):
 
 
 async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
-    state_file = current_state_file()
-    state = load_state(state_file) if state_file else {}
+    state = load_state(STATE_FILE)
     sentence = state.get("sentence")
-    if not sentence:
-        await interaction.followup.send("No sentence live right now — check back after the morning drop! 🌅", ephemeral=True)
+    if not sentence or not is_within_active_window(state):
+        await interaction.followup.send("No sentence live right now — the next one drops in the morning! 🌅", ephemeral=True)
         return
 
     if checkme_count_today(interaction.user.id) >= CHECKME_DAILY_LIMIT:
@@ -676,7 +671,7 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
     feedback = generate_feedback(sentence, attempt, history)
     await interaction.followup.send(feedback, ephemeral=True)
 
-    append_checkme_exchange(state_file, interaction.user.id, attempt, feedback)
+    append_checkme_exchange(STATE_FILE, interaction.user.id, attempt, feedback)
     record_participation(interaction.user.id)
     record_checkme_usage(interaction.user.id)
     log_event("checkme", interaction.user.id, exchange=len(history) + 1)
