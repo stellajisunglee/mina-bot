@@ -10,6 +10,7 @@ import re
 import traceback
 from datetime import time, datetime, date, timedelta
 from zoneinfo import ZoneInfo
+import storage
 
 load_dotenv()
 
@@ -176,6 +177,11 @@ def load_state(state_file=STATE_FILE):
 def save_state(data, state_file=STATE_FILE):
     with open(state_file, "w") as f:
         json.dump(data, f)
+
+
+def state_file_for_channel(channel_id):
+    """Route to the right state file so dev-channel testing never touches real state."""
+    return TEST_STATE_FILE if channel_id == BOT_DEV_CHANNEL_ID else STATE_FILE
 
 
 def load_engagement():
@@ -478,11 +484,33 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    if not message.author.bot and message.channel.id == MINA_BOT_CHANNEL_ID and is_within_active_window():
-        voice = is_voice_message(message)
-        if voice or contains_japanese(message.content):
-            record_participation(message.author.id)
-            log_event("participation", message.author.id, method="voice" if voice else "text")
+    if not message.author.bot and message.channel.id in (MINA_BOT_CHANNEL_ID, BOT_DEV_CHANNEL_ID):
+        is_test = message.channel.id == BOT_DEV_CHANNEL_ID
+        state = load_state(state_file_for_channel(message.channel.id))
+        if is_within_active_window(state):
+            voice = is_voice_message(message)
+            if voice or contains_japanese(message.content):
+                if not is_test:
+                    record_participation(message.author.id)
+                    log_event("participation", message.author.id, method="voice" if voice else "text")
+
+                focus = state.get("focus") or {}
+                # Discord CDN attachment URLs expire in ~24h; this is a placeholder until download is added.
+                content = message.attachments[0].url if voice and message.attachments else message.content
+                storage.append_submission(
+                    message.author.id, "public_attempt", is_test,
+                    content=content, is_voice=voice, focus=focus,
+                )
+                storage.append_metrics(
+                    message.author.id, is_test,
+                    type="public_attempt",
+                    level=focus.get("level"),
+                    grammar=focus.get("grammar"),
+                    theme=focus.get("theme"),
+                    char_count=None if voice else len(message.content),
+                    japanese_char_count=None if voice else len(JAPANESE_PATTERN.findall(message.content)),
+                    is_voice=voice,
+                )
     await bot.process_commands(message)
 
 
@@ -613,11 +641,12 @@ async def test_evening(ctx):
     await ctx.message.delete()
 
 
-def append_checkme_exchange(state_file, user_id, attempt, feedback):
+def append_checkme_exchange(state_file, user_id, attempt, feedback, is_test=False):
     """Record one attempt/feedback pair for this session. Cleared by the next morning drop."""
     state = load_state(state_file)
     history = state.setdefault("checkme_history", {})
     exchanges = history.get(str(user_id), [])
+    exchange_n = len(exchanges) + 1
     exchanges.append({
         "attempt": attempt,
         "feedback": feedback,
@@ -625,6 +654,24 @@ def append_checkme_exchange(state_file, user_id, attempt, feedback):
     })
     history[str(user_id)] = exchanges[-CHECKME_HISTORY_LIMIT:]
     save_state(state, state_file)
+
+    focus = state.get("focus") or {}
+    storage.append_submission(
+        user_id, "checkme", is_test,
+        attempt=attempt, feedback=feedback, sentence=state.get("sentence"),
+        exchange_n=exchange_n, focus=focus,
+    )
+    storage.append_metrics(
+        user_id, is_test,
+        type="checkme",
+        level=focus.get("level"),
+        grammar=focus.get("grammar"),
+        theme=focus.get("theme"),
+        char_count=len(attempt),
+        japanese_char_count=len(JAPANESE_PATTERN.findall(attempt)),
+        is_voice=False,
+        exchange_n=exchange_n,
+    )
 
 
 def session_history(state, user_id):
@@ -653,14 +700,16 @@ def session_history(state, user_id):
     return window
 
 
-async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
-    state = load_state(STATE_FILE)
+async def send_checkme_feedback(interaction: discord.Interaction, attempt: str, channel_id: int):
+    is_test = channel_id == BOT_DEV_CHANNEL_ID
+    state_file = state_file_for_channel(channel_id)
+    state = load_state(state_file)
     sentence = state.get("sentence")
     if not sentence or not is_within_active_window(state):
         await interaction.followup.send("No sentence live right now — the next one drops in the morning! 🌅", ephemeral=True)
         return
 
-    if checkme_count_today(interaction.user.id) >= CHECKME_DAILY_LIMIT:
+    if not is_test and checkme_count_today(interaction.user.id) >= CHECKME_DAILY_LIMIT:
         await interaction.followup.send(
             f"You've hit today's limit of {CHECKME_DAILY_LIMIT} checks — come back tomorrow, or keep practicing without me for now! 💪",
             ephemeral=True
@@ -671,17 +720,18 @@ async def send_checkme_feedback(interaction: discord.Interaction, attempt: str):
     feedback = generate_feedback(sentence, attempt, history)
     await interaction.followup.send(feedback, ephemeral=True)
 
-    append_checkme_exchange(STATE_FILE, interaction.user.id, attempt, feedback)
-    record_participation(interaction.user.id)
-    record_checkme_usage(interaction.user.id)
-    log_event("checkme", interaction.user.id, exchange=len(history) + 1)
+    append_checkme_exchange(state_file, interaction.user.id, attempt, feedback, is_test=is_test)
+    if not is_test:
+        record_participation(interaction.user.id)
+        record_checkme_usage(interaction.user.id)
+        log_event("checkme", interaction.user.id, exchange=len(history) + 1)
 
 
 @bot.tree.context_menu(name="Check my Japanese")
 async def checkme_context(interaction: discord.Interaction, message: discord.Message):
     await interaction.response.defer(ephemeral=True)
 
-    if message.channel.id != MINA_BOT_CHANNEL_ID:
+    if message.channel.id not in (MINA_BOT_CHANNEL_ID, BOT_DEV_CHANNEL_ID):
         await interaction.followup.send(f"This only works on attempts posted in <#{MINA_BOT_CHANNEL_ID}>!", ephemeral=True)
         return
 
@@ -693,7 +743,7 @@ async def checkme_context(interaction: discord.Interaction, message: discord.Mes
         await interaction.followup.send("That message doesn't have any text for me to check — voice memo feedback isn't supported yet, try posting a text attempt instead!", ephemeral=True)
         return
 
-    await send_checkme_feedback(interaction, message.content)
+    await send_checkme_feedback(interaction, message.content, message.channel.id)
 
 
 @bot.tree.command(name="streak", description="See your participation streak")
