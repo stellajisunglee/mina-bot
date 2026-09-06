@@ -103,3 +103,11 @@ def read_metrics(user_id, include_test=False):
         e for e in _read_jsonl(METRICS_FILE)
         if e.get("user_id") == user_id and (include_test or not e.get("is_test"))
     ]
+
+
+def read_all_submissions(include_test=False):
+    return [e for e in _read_jsonl(SUBMISSIONS_FILE) if include_test or not e.get("is_test")]
+
+
+def read_all_metrics(include_test=False):
+    return [e for e in _read_jsonl(METRICS_FILE) if include_test or not e.get("is_test")]

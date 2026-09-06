@@ -11,6 +11,7 @@ import traceback
 from datetime import time, datetime, date, timedelta
 from zoneinfo import ZoneInfo
 import storage
+import metrics_report
 
 load_dotenv()
 
@@ -19,10 +20,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 KAIWA_CREW_ROLE_ID = int(os.getenv("KAIWA_CREW_ROLE_ID"))
 MINA_BOT_CHANNEL_ID = int(os.getenv("MINA_BOT_CHANNEL_ID"))
 BOT_DEV_CHANNEL_ID = int(os.getenv("BOT_DEV_CHANNEL_ID"))
+REPORTS_CHANNEL_ID = int(os.getenv("REPORTS_CHANNEL_ID"))
 
 TIMEZONE = ZoneInfo("America/Los_Angeles")
 MORNING_TIME = time(6, 0, tzinfo=TIMEZONE)
 EVENING_TIME = time(18, 0, tzinfo=TIMEZONE)
+REPORT_TIME = time(23, 59, tzinfo=TIMEZONE)
 
 STATE_FILE = "state.json"
 TEST_STATE_FILE = "test_state.json"
@@ -497,8 +500,12 @@ async def on_ready():
             bot.tree.copy_global_to(guild=channel.guild)
             await bot.tree.sync(guild=channel.guild)
             _commands_synced = True
-    daily_morning.start()
-    daily_evening.start()
+    if not daily_morning.is_running():
+        daily_morning.start()
+    if not daily_evening.is_running():
+        daily_evening.start()
+    if not weekly_report_loop.is_running():
+        weekly_report_loop.start()
 
 
 @bot.event
@@ -535,6 +542,21 @@ async def on_message(message):
                     file_size_bytes=attachment.size if attachment else None,
                 )
     await bot.process_commands(message)
+
+
+async def send_long_message(channel, text, limit=2000):
+    """Split text on line boundaries into chunks under Discord's 2000-char cap."""
+    chunk = ""
+    for line in text.split("\n"):
+        candidate = f"{chunk}\n{line}" if chunk else line
+        if len(candidate) > limit:
+            if chunk:
+                await channel.send(chunk)
+            chunk = line[:limit]
+        else:
+            chunk = candidate
+    if chunk:
+        await channel.send(chunk)
 
 
 async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
@@ -643,6 +665,26 @@ async def daily_evening():
         traceback.print_exc()
 
 
+async def run_weekly_report(channel_id=REPORTS_CHANNEL_ID):
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        print("Reports channel not found")
+        return
+    level_labels = {name: cfg["label"] for name, cfg in LEVELS_BY_NAME.items()}
+    await send_long_message(channel, metrics_report.build_report(level_labels=level_labels))
+
+
+@tasks.loop(time=REPORT_TIME)
+async def weekly_report_loop():
+    if datetime.now(TIMEZONE).weekday() != 6:  # Sunday
+        return
+    try:
+        await run_weekly_report()
+    except Exception:
+        print("Weekly report failed:")
+        traceback.print_exc()
+
+
 @bot.command(name="testmorning")
 @commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
     ctx.author.guild_permissions.administrator or
@@ -659,6 +701,16 @@ async def test_morning(ctx):
     any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
 async def test_evening(ctx):
     await run_evening(TEST_STATE_FILE, BOT_DEV_CHANNEL_ID)
+    import asyncio
+    await asyncio.sleep(1)
+    await ctx.message.delete()
+
+@bot.command(name="weeklyreport")
+@commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
+    ctx.author.guild_permissions.administrator or
+    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
+async def weeklyreport(ctx):
+    await run_weekly_report()
     import asyncio
     await asyncio.sleep(1)
     await ctx.message.delete()
