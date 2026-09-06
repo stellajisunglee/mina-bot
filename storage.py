@@ -59,11 +59,22 @@ def append_submission(user_id, type, is_test, **fields):
         if existing.get("user_id") == user_id and existing.get("is_test") == is_test:
             kept_for_bucket += 1
             if kept_for_bucket > SUBMISSIONS_PER_USER_LIMIT:
+                _delete_voice_file(existing.get("voice_path"))
                 continue
         trimmed.append(existing)
     trimmed.reverse()
 
     _write_jsonl(SUBMISSIONS_FILE, trimmed)
+
+
+def _delete_voice_file(voice_path):
+    """Best-effort cleanup so retention covers the audio, not just the jsonl row."""
+    if not voice_path or not os.path.exists(voice_path):
+        return
+    try:
+        os.remove(voice_path)
+    except OSError as error:
+        print(f"Could not delete trimmed voice file {voice_path}: {error}")
 
 
 def append_metrics(user_id, is_test, **fields):

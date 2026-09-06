@@ -30,6 +30,8 @@ ENGAGEMENT_FILE = "engagement.json"
 EVENTS_FILE = "events.jsonl"
 CHECKME_DAILY_LIMIT = 5
 CHECKME_HISTORY_LIMIT = 5
+VOICE_DIR = "voice"
+VOICE_MAX_BYTES = 10 * 1024 * 1024
 
 JAPANESE_PATTERN = re.compile(r'[぀-ヿ一-鿿]')
 
@@ -219,6 +221,22 @@ def is_voice_message(message):
     if message.flags.voice:
         return True
     return any((a.content_type or "").startswith("audio/") for a in message.attachments)
+
+
+async def save_voice_attachment(attachment, user_id):
+    """Download a voice attachment to disk, skipping anything over VOICE_MAX_BYTES. Returns the local path, or None."""
+    if attachment.size > VOICE_MAX_BYTES:
+        return None
+    directory = os.path.join(VOICE_DIR, str(user_id))
+    os.makedirs(directory, exist_ok=True)
+    timestamp = datetime.now(TIMEZONE).strftime("%Y%m%dT%H%M%S%f")
+    path = os.path.join(directory, f"{timestamp}.ogg")
+    try:
+        await attachment.save(path)
+    except Exception as error:
+        print(f"Could not download voice attachment for user {user_id}: {error}")
+        return None
+    return path
 
 
 def is_within_active_window(state=None):
@@ -495,11 +513,13 @@ async def on_message(message):
                     log_event("participation", message.author.id, method="voice" if voice else "text")
 
                 focus = state.get("focus") or {}
-                # Discord CDN attachment URLs expire in ~24h; this is a placeholder until download is added.
-                content = message.attachments[0].url if voice and message.attachments else message.content
+                attachment = message.attachments[0] if voice and message.attachments else None
+                # Discord CDN attachment URLs expire in ~24h; kept alongside the downloaded copy.
+                content = attachment.url if attachment else message.content
+                voice_path = await save_voice_attachment(attachment, message.author.id) if attachment else None
                 storage.append_submission(
                     message.author.id, "public_attempt", is_test,
-                    content=content, is_voice=voice, focus=focus,
+                    content=content, is_voice=voice, voice_path=voice_path, focus=focus,
                 )
                 storage.append_metrics(
                     message.author.id, is_test,
@@ -510,6 +530,8 @@ async def on_message(message):
                     char_count=None if voice else len(message.content),
                     japanese_char_count=None if voice else len(JAPANESE_PATTERN.findall(message.content)),
                     is_voice=voice,
+                    duration_secs=getattr(attachment, "duration_secs", None) if attachment else None,
+                    file_size_bytes=attachment.size if attachment else None,
                 )
     await bot.process_commands(message)
 

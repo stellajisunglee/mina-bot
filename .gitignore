@@ -7,5 +7,6 @@ engagement.json
 events.jsonl
 submissions.jsonl
 metrics.jsonl
+voice/
 .DS_Store
 bot.log
