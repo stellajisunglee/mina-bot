@@ -581,6 +581,16 @@ async def count_unlocked_members(guild):
     return sum(1 for m in members if not m.bot and len(m.roles) > 1)
 
 
+async def get_member_ids_with_role(guild, role_id):
+    """Set of str user ids for human members holding role_id -- a set rather than
+    a count so callers can intersect it against other user-id sets (e.g. who's
+    attempted, who's gone voice)."""
+    members = guild.members
+    if not members:
+        members = [m async for m in guild.fetch_members(limit=None)]
+    return {str(m.id) for m in members if not m.bot and any(r.id == role_id for r in m.roles)}
+
+
 async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
     channel = bot.get_channel(channel_id)
     if not channel:
@@ -694,10 +704,13 @@ async def run_weekly_report(channel_id=REPORTS_CHANNEL_ID):
         return
     level_labels = {name: cfg["label"] for name, cfg in LEVELS_BY_NAME.items()}
     unlocked_member_count = await count_unlocked_members(channel.guild)
+    kaiwa_crew_member_ids = await get_member_ids_with_role(channel.guild, KAIWA_CREW_ROLE_ID)
     await send_long_message(channel, metrics_report.build_report(
         level_labels=level_labels,
         switchover_date=LEVEL_LABEL_MOVED_TO_EVENING,
         unlocked_member_count=unlocked_member_count,
+        mina_bot_channel_id=MINA_BOT_CHANNEL_ID,
+        kaiwa_crew_member_ids=kaiwa_crew_member_ids,
     ))
 
 
