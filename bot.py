@@ -31,6 +31,20 @@ STATE_FILE = "state.json"
 TEST_STATE_FILE = "test_state.json"
 ENGAGEMENT_FILE = "engagement.json"
 EVENTS_FILE = "events.jsonl"
+SELF_DECLARED_LEVELS_FILE = "self_declared_levels.json"
+
+# Self-assigned JLPT/native-speaker roles. Distinct from focus.level (the day's
+# sentence difficulty) -- this is the person's own declared level, hence
+# "self_declared_level" everywhere it appears rather than plain "level".
+SELF_DECLARED_LEVEL_ROLE_IDS = {
+    1492606868890321077: "N5",
+    1492607335011451013: "N4",
+    1492607491089891438: "N3",
+    1492607551617892376: "N2",
+    1492607584962744543: "N1",
+    1492607687719125012: "日本人",
+}
+
 CHECKME_DAILY_LIMIT = 5
 CHECKME_HISTORY_LIMIT = 5
 VOICE_DIR = "voice"
@@ -591,6 +605,29 @@ async def get_member_ids_with_role(guild, role_id):
     return {str(m.id) for m in members if not m.bot and any(r.id == role_id for r in m.roles)}
 
 
+async def refresh_self_declared_levels(guild):
+    """Snapshot every human member's self-assigned JLPT/native-speaker roles to
+    disk, so the dashboard can read it without ever connecting to Discord.
+    Every human member gets an entry, including an empty list for members
+    holding none of these roles -- that's how the dashboard tells 'nobody
+    checked' apart from 'everyone unknown wasn't scanned'."""
+    members = guild.members
+    if not members:
+        members = [m async for m in guild.fetch_members(limit=None)]
+
+    snapshot = {}
+    for m in members:
+        if m.bot:
+            continue
+        snapshot[str(m.id)] = [
+            SELF_DECLARED_LEVEL_ROLE_IDS[r.id] for r in m.roles if r.id in SELF_DECLARED_LEVEL_ROLE_IDS
+        ]
+
+    with open(SELF_DECLARED_LEVELS_FILE, "w") as f:
+        json.dump(snapshot, f)
+    return snapshot
+
+
 async def run_morning(state_file=STATE_FILE, channel_id=MINA_BOT_CHANNEL_ID):
     channel = bot.get_channel(channel_id)
     if not channel:
@@ -705,6 +742,7 @@ async def run_weekly_report(channel_id=REPORTS_CHANNEL_ID):
     level_labels = {name: cfg["label"] for name, cfg in LEVELS_BY_NAME.items()}
     unlocked_member_count = await count_unlocked_members(channel.guild)
     kaiwa_crew_member_ids = await get_member_ids_with_role(channel.guild, KAIWA_CREW_ROLE_ID)
+    await refresh_self_declared_levels(channel.guild)
     await send_long_message(channel, metrics_report.build_report(
         level_labels=level_labels,
         switchover_date=LEVEL_LABEL_MOVED_TO_EVENING,
@@ -742,6 +780,17 @@ async def test_morning(ctx):
 async def test_evening(ctx):
     await run_evening(TEST_STATE_FILE, BOT_DEV_CHANNEL_ID)
     import asyncio
+    await asyncio.sleep(1)
+    await ctx.message.delete()
+
+@bot.command(name="refreshlevels")
+@commands.check(lambda ctx: ctx.channel.id == BOT_DEV_CHANNEL_ID and (
+    ctx.author.guild_permissions.administrator or
+    any(role.name in ["moderator", "trial moderator"] for role in ctx.author.roles)))
+async def refresh_levels(ctx):
+    snapshot = await refresh_self_declared_levels(ctx.guild)
+    import asyncio
+    await ctx.send(f"Refreshed self-declared levels for {len(snapshot)} members.", delete_after=5)
     await asyncio.sleep(1)
     await ctx.message.delete()
 

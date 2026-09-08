@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mina Bot Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 24px 32px 64px; background: #f7f7f8; color: #1a1a1a; }
+  h1 { margin-bottom: 4px; }
+  .generated { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .controls { margin-bottom: 24px; }
+  .controls label { margin-right: 16px; font-size: 14px; cursor: pointer; }
+  section { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 16px 20px; margin-bottom: 20px; }
+  section h2 { margin-top: 0; font-size: 16px; }
+  canvas { max-height: 320px; }
+  .coverage { color: #666; font-size: 12px; margin-top: 8px; margin-bottom: 0; }
+  code { background: #eee; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>Mina Bot Analytics</h1>
+<p class="generated">Generated {{ data.generated_at }} &mdash; read-only, from metrics.jsonl.</p>
+
+<div class="controls">
+  <label><input type="radio" name="granularity" value="daily" checked> Daily</label>
+  <label><input type="radio" name="granularity" value="weekly"> Weekly</label>
+  <label><input type="radio" name="granularity" value="monthly"> Monthly</label>
+</div>
+
+<section>
+  <h2>Attempts &amp; active users (#minabot)</h2>
+  <canvas id="chart-attempts"></canvas>
+  <p class="coverage" id="coverage-attempts"></p>
+</section>
+
+<section>
+  <h2>Voice ratio (#minabot)</h2>
+  <canvas id="chart-voice-ratio"></canvas>
+  <p class="coverage" id="coverage-voice-ratio"></p>
+</section>
+
+<section>
+  <h2>Voice per channel (server-wide)</h2>
+  <canvas id="chart-voice-per-channel"></canvas>
+  <p class="coverage" id="coverage-voice-per-channel"></p>
+</section>
+
+<section>
+  <h2>Participation by focus.level (#minabot, raw user counts)</h2>
+  <canvas id="chart-participation-by-level"></canvas>
+  <p class="coverage" id="coverage-participation-by-level"></p>
+</section>
+
+<section>
+  <h2>Checkme exchange depth (#minabot sessions)</h2>
+  <canvas id="chart-exchange-depth"></canvas>
+  <p class="coverage" id="coverage-exchange-depth"></p>
+</section>
+
+<section>
+  <h2>Attempts before evening reveal (#minabot)</h2>
+  <canvas id="chart-before-reveal"></canvas>
+  <p class="coverage" id="coverage-before-reveal"></p>
+</section>
+
+<section id="self-level-section">
+  <h2>Self-declared level (self_declared_level, not focus.level)</h2>
+  <canvas id="chart-self-level"></canvas>
+  <p class="coverage" id="coverage-self-level"></p>
+</section>
+
+<script>
+const DATA = {{ data | tojson }};
+let granularity = 'daily';
+const charts = {};
+const PALETTE = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b07aa1','#ff9da7','#9c755f','#bab0ac'];
+
+function fmtPct(v) { return v === null || v === undefined ? 'n/a' : v.toFixed(1) + '%'; }
+
+function coverageText(cov) {
+  if (!cov.earliest) return 'No data yet.';
+  return `Data spans ${cov.earliest} to ${cov.latest} (${cov.days} day${cov.days === 1 ? '' : 's'}).`;
+}
+
+function switchoverAnnotation() {
+  const bucket = DATA.switchover_buckets[granularity];
+  return {
+    switchover: {
+      type: 'line',
+      xMin: bucket,
+      xMax: bucket,
+      borderColor: '#e67e22',
+      borderWidth: 2,
+      borderDash: [6, 4],
+      label: {
+        display: true,
+        content: 'level label moved to evening',
+        position: 'start',
+        color: '#e67e22',
+        font: { size: 10 },
+      },
+    },
+  };
+}
+
+function baseOptions(extraPlugins) {
+  return {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    scales: { x: { type: 'category' } },
+    plugins: Object.assign({ annotation: { annotations: switchoverAnnotation() } }, extraPlugins || {}),
+  };
+}
+
+function buildOrUpdate(key, canvasId, config) {
+  if (charts[key]) {
+    charts[key].data = config.data;
+    charts[key].options = config.options;
+    charts[key].update();
+  } else {
+    charts[key] = new Chart(document.getElementById(canvasId).getContext('2d'), config);
+  }
+}
+
+function renderAttempts() {
+  const d = DATA.granularities[granularity].attempts_and_active_users;
+  buildOrUpdate('attempts', 'chart-attempts', {
+    type: 'line',
+    data: {
+      labels: d.labels,
+      datasets: [
+        { label: 'Attempts', data: d.attempts, borderColor: PALETTE[0], backgroundColor: PALETTE[0], tension: 0.15 },
+        { label: 'Active users', data: d.active_users, borderColor: PALETTE[1], backgroundColor: PALETTE[1], tension: 0.15 },
+      ],
+    },
+    options: baseOptions(),
+  });
+  document.getElementById('coverage-attempts').textContent = coverageText(DATA.coverage.mina_bot);
+}
+
+function renderVoiceRatio() {
+  const d = DATA.granularities[granularity].voice_ratio;
+  buildOrUpdate('voiceRatio', 'chart-voice-ratio', {
+    type: 'line',
+    data: {
+      labels: d.labels,
+      datasets: [{ label: 'Voice %', data: d.pct, borderColor: PALETTE[2], backgroundColor: PALETTE[2], spanGaps: true }],
+    },
+    options: baseOptions({
+      tooltip: {
+        callbacks: {
+          label: (ctx) => `Voice: ${fmtPct(d.pct[ctx.dataIndex])} (${d.voice_count[ctx.dataIndex]} of ${d.total_count[ctx.dataIndex]})`,
+        },
+      },
+    }),
+  });
+  document.getElementById('coverage-voice-ratio').textContent = coverageText(DATA.coverage.mina_bot);
+}
+
+function renderVoicePerChannel() {
+  const d = DATA.granularities[granularity].voice_per_channel;
+  const channelNames = Object.keys(d.channels);
+  buildOrUpdate('voicePerChannel', 'chart-voice-per-channel', {
+    type: 'line',
+    data: {
+      labels: d.labels,
+      datasets: channelNames.map((ch, i) => ({
+        label: ch,
+        data: d.channels[ch],
+        borderColor: PALETTE[i % PALETTE.length],
+        backgroundColor: PALETTE[i % PALETTE.length],
+        tension: 0.15,
+      })),
+    },
+    options: baseOptions(),
+  });
+  document.getElementById('coverage-voice-per-channel').textContent = coverageText(DATA.coverage.server_wide);
+}
+
+function renderParticipationByLevel() {
+  const d = DATA.granularities[granularity].participation_by_level;
+  const levels = Object.keys(d.levels);
+  buildOrUpdate('participationByLevel', 'chart-participation-by-level', {
+    type: 'bar',
+    data: {
+      labels: d.labels,
+      datasets: levels.map((lvl, i) => ({
+        label: lvl,
+        data: d.levels[lvl],
+        backgroundColor: PALETTE[i % PALETTE.length],
+        stack: 'levels',
+      })),
+    },
+    options: baseOptions({}, ),
+  });
+  charts.participationByLevel.options.scales = { x: { type: 'category', stacked: true }, y: { stacked: true, beginAtZero: true } };
+  charts.participationByLevel.update();
+  const cov = DATA.coverage;
+  document.getElementById('coverage-participation-by-level').textContent =
+    coverageText(cov.mina_bot) + ` ${cov.no_level.no_level} of ${cov.no_level.total} #minabot rows lack focus.level data (backfilled history or non-attempt rows).`;
+}
+
+function renderExchangeDepth() {
+  const d = DATA.granularities[granularity].exchange_depth;
+  const depths = Object.keys(d.depths);
+  buildOrUpdate('exchangeDepth', 'chart-exchange-depth', {
+    type: 'bar',
+    data: {
+      labels: d.labels,
+      datasets: depths.map((depth, i) => ({
+        label: `exchange ${depth}`,
+        data: d.depths[depth],
+        backgroundColor: PALETTE[i % PALETTE.length],
+        stack: 'depths',
+      })),
+    },
+    options: baseOptions(),
+  });
+  charts.exchangeDepth.options.scales = { x: { type: 'category', stacked: true }, y: { stacked: true, beginAtZero: true } };
+  charts.exchangeDepth.update();
+  document.getElementById('coverage-exchange-depth').textContent = coverageText(DATA.coverage.mina_bot);
+}
+
+function renderBeforeReveal() {
+  const d = DATA.granularities[granularity].before_reveal;
+  buildOrUpdate('beforeReveal', 'chart-before-reveal', {
+    type: 'line',
+    data: {
+      labels: d.labels,
+      datasets: [{ label: 'Before reveal %', data: d.pct, borderColor: PALETTE[4], backgroundColor: PALETTE[4], spanGaps: true }],
+    },
+    options: baseOptions({
+      tooltip: {
+        callbacks: {
+          label: (ctx) => `Before reveal: ${fmtPct(d.pct[ctx.dataIndex])} (${d.before_count[ctx.dataIndex]} of ${d.total_count[ctx.dataIndex]})`,
+        },
+      },
+    }),
+  });
+  document.getElementById('coverage-before-reveal').textContent = coverageText(DATA.coverage.mina_bot);
+}
+
+function renderSelfDeclaredLevel() {
+  const sd = DATA.self_declared_level;
+  const section = document.getElementById('self-level-section');
+  if (!sd) {
+    document.getElementById('chart-self-level').replaceWith(
+      Object.assign(document.createElement('p'), {
+        innerHTML: 'No self-declared-level snapshot yet &mdash; run <code>!refreshlevels</code> in the dev channel, or wait for the next weekly report.',
+      })
+    );
+    return;
+  }
+
+  const LEVEL_DISPLAY_ORDER = ['N5', 'N4', 'N3', 'N2', 'N1', '日本人', 'unknown'];
+  const levels = LEVEL_DISPLAY_ORDER.filter((l) => l in sd.breakdown);
+  const attemptedPct = levels.map(l => sd.breakdown[l].attempted_pct);
+  const voicedPct = levels.map(l => sd.breakdown[l].voiced_pct);
+  const denominators = levels.map(l => sd.breakdown[l].denominator);
+  const attemptedCounts = levels.map(l => sd.breakdown[l].attempted_count);
+  const voicedCounts = levels.map(l => sd.breakdown[l].voiced_count);
+  const suppressed = levels.map(l => sd.breakdown[l].suppressed);
+
+  new Chart(document.getElementById('chart-self-level').getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: levels,
+      datasets: [
+        { label: 'Ever attempted in #minabot', data: attemptedPct, backgroundColor: PALETTE[0] },
+        { label: 'Voice anywhere in the server', data: voicedPct, backgroundColor: PALETTE[1] },
+      ],
+    },
+    options: {
+      responsive: true,
+      scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: '%' } } },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const i = ctx.dataIndex;
+              const isAttempted = ctx.dataset.label.startsWith('Ever');
+              const count = isAttempted ? attemptedCounts[i] : voicedCounts[i];
+              const denom = denominators[i];
+              if (suppressed[i]) {
+                return `${ctx.dataset.label}: ${count} of ${denom} (rate suppressed, fewer than 3 members)`;
+              }
+              return `${ctx.dataset.label}: ${ctx.raw}% (${count} of ${denom})`;
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const suppressedList = levels
+    .map((l, i) => suppressed[i] ? `${l} (${denominators[i]})` : null)
+    .filter(Boolean)
+    .join(', ');
+
+  document.getElementById('coverage-self-level').textContent =
+    `Snapshot covers ${sd.total_members_scanned} members. ${sd.multi_level_users} hold more than one level role ` +
+    `and are counted in each. Rate suppressed (fewer than 3 members): ${suppressedList || 'none'}.`;
+}
+
+function renderAll() {
+  renderAttempts();
+  renderVoiceRatio();
+  renderVoicePerChannel();
+  renderParticipationByLevel();
+  renderExchangeDepth();
+  renderBeforeReveal();
+}
+
+document.querySelectorAll('input[name="granularity"]').forEach((el) => {
+  el.addEventListener('change', (e) => {
+    granularity = e.target.value;
+    renderAll();
+  });
+});
+
+renderAll();
+renderSelfDeclaredLevel();
+</script>
+
+</body>
+</html>
