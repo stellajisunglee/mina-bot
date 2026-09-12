@@ -1,115 +1,6 @@
 # Decisions Log
 
-Architecture and design decisions for mina-bot, in the order they were made.
-
----
-
-## [2026-09-05] Durable submissions/metrics storage, separate from state.json
-
-- **Status:** Accepted
-- **Context:** `state.json` is overwritten fresh every morning by `run_morning`, which silently destroyed all checkme attempt/feedback history each day. `on_message` never stored public attempts at all — there was no history of the community's actual practice, only the current day's live session state.
-- **Options Considered:**
-  1. Stop wiping `state.json` / extend its lifetime. *Pros:* minimal change. *Cons:* `state.json` is meant to represent the current day's live session (posted_at/revealed_at, in-session checkme continuity); conflating it with permanent history breaks that model and the daily-reset behavior other code depends on.
-  2. Add a new `storage.py` module with two append-only files: `submissions.jsonl` (rich per-attempt detail: content, feedback, voice path — trimmed to the most recent 7 per user) and `metrics.jsonl` (lean, analytics-only fields, never trimmed). *Pros:* clean separation between "what happened" and "today's live session"; `run_morning`/`run_evening`'s existing reset behavior stays untouched. *Cons:* two new files with different retention semantics to keep straight.
-- **Decision:** Option 2. `storage.py` owns both files; `on_message` and `append_checkme_exchange` write to them without changing any existing `state.json` behavior.
-- **Consequences:** Attempt and feedback history now survives the daily reset. Any future feature that wants "history" has to pick the right file — `submissions.jsonl` for recent detail, `metrics.jsonl` for anything spanning further back or needing completeness.
-
----
-
-## [2026-09-05] is_test flag with per-(user, is_test) rolling trim
-
-- **Status:** Accepted
-- **Context:** Dev-channel testing needed to write to the same `submissions.jsonl` used by real users, without heavy test traffic evicting real users' most recent attempts out of the 7-entry retention window.
-- **Options Considered:**
-  1. Write dev-channel test data to entirely separate files. *Pros:* total isolation. *Cons:* doubles the file surface and duplicates all read/write logic.
-  2. Single file, an `is_test` flag required on every row, with retention trimmed independently per `(user_id, is_test)` bucket. *Pros:* one file, one code path; a user's real and test rows can never compete for the same 7-slot window. *Cons:* every write call site must always pass `is_test` explicitly — it's a required argument, not a default.
-- **Decision:** Option 2.
-- **Consequences:** Dev testing can be arbitrarily heavy without threatening real users' retained history (verified directly: 10 test writes + 3 real writes for the same fake user correctly kept all 3 real rows and only the most recent 7 test rows). Every future `storage.append_*` call site has to remember which bucket it's writing to.
-
----
-
-## [2026-09-05] Channel-based state file routing for /checkme
-
-- **Status:** Accepted
-- **Context:** `/checkme` and `append_checkme_exchange` only ever read/wrote the real `STATE_FILE`, so there was no way to exercise the full checkme flow in the dev channel without risking real users seeing feedback generated against test data.
-- **Options Considered:**
-  1. Keep a single shared state file and gate dev testing some other way. *Pros:* simplest. *Cons:* doesn't solve the actual requirement — testing the full flow end-to-end.
-  2. Add `state_file_for_channel(channel_id)`, routing `BOT_DEV_CHANNEL_ID` to `TEST_STATE_FILE` and `MINA_BOT_CHANNEL_ID` to `STATE_FILE`, threaded through `send_checkme_feedback` and `on_message`. *Pros:* dev channel gets a fully working, isolated checkme flow (streaks, daily limit, and participation all separately exempted for test traffic). *Cons:* a larger diff than a minimal fix, and it touches `on_message`'s active-window check.
-- **Decision:** Option 2.
-- **Consequences:** Dev-channel testing now exercises the real code path, not a stub. Every future channel-aware feature has to remember to route through this function rather than assuming `STATE_FILE`.
-
----
-
-## [2026-09-06] Multi-channel voice logging: voice-only, metrics-only, outside #minabot
-
-- **Status:** Accepted
-- **Context:** Extending presence logging beyond `MINA_BOT_CHANNEL_ID` raised a real privacy question: what's acceptable to record from channels people joined for reasons unrelated to Japanese practice, and never opted into being measured in.
-- **Options Considered:**
-  1. Log full content and a `submissions.jsonl` row from every channel, same treatment as `MINA_BOT_CHANNEL_ID`. *Pros:* richest possible data. *Cons:* stores people's actual message text from channels with no expectation of being logged — rejected on privacy grounds.
-  2. Log voice messages only, to `metrics.jsonl` only (`channel_id`, `channel_name`, `user_id`, `is_voice`, `timestamp` — no content, no submissions row, no audio download), for every channel the bot can access except `BOT_DEV_CHANNEL_ID`. *Pros:* respects the implicit privacy boundary of general channels while still capturing the one cross-channel signal that's actually useful — voice adoption. *Cons:* `metrics.jsonl` now holds two different row shapes, which broke code that indexed `row["type"]` directly (fixed by switching to `.get("type")` in six places).
-- **Decision:** Option 2.
-- **Consequences:** Enabled real cross-channel voice analysis (the FUNNEL section, per-channel voice rates) without ever capturing anyone's words outside the feature they chose to use. Every future `metrics.jsonl` consumer has to handle both row shapes rather than assume one uniform schema.
-
----
-
-## [2026-09-06] backfill.py idempotency: message_id with a composite-key fallback
-
-- **Status:** Accepted
-- **Context:** Re-running `backfill.py` re-inserted every already-backfilled row into `metrics.jsonl` as a fresh duplicate — `submissions.jsonl` self-healed via its trim, but `metrics.jsonl` never trims. Discovered after a real incident: 131 duplicate rows from two runs against the same channel.
-- **Options Considered:**
-  1. Re-scan Discord, patch a `message_id` onto the ~290 pre-existing rows that predate the field, then match on `message_id` alone from then on. *Pros:* one matching strategy, permanently. *Cons:* costs another full multi-channel Discord scan and an Oracle stop/restart cycle; still has to match old rows to messages by `(user_id, timestamp)` internally to perform the patch, so it doesn't remove that assumption — just relocates it to a one-time step.
-  2. Match on `message_id` when both sides have one; fall back to `(user_id, timestamp, channel_id)` for rows written before the field existed. Never patch the old rows. *Pros:* zero extra Discord calls or downtime; gets strictly more precise over time as more rows carry a real `message_id`. *Cons:* two matching strategies live in the code permanently, since the pre-existing rows will never gain a `message_id` under this approach.
-- **Decision:** Option 2, chosen explicitly over Option 1 after weighing both.
-- **Consequences:** `backfill.py` can be re-run safely at any time — verified against both the local and Oracle datasets post-fix, reporting 0 new/100% already-backfilled on a clean re-run. A future reader of `backfill.py` needs the context for why two matching strategies coexist.
-
----
-
-## [2026-09-06] Weekly report: explicit MINABOT / SERVER-WIDE / FUNNEL scoping
-
-- **Status:** Accepted
-- **Context:** Once multi-channel logging landed, the report's engagement metrics (active users, total attempts, etc.) started silently pulling from the full cross-channel dataset instead of just the `#minabot` feature they were meant to describe — "active users" was inflated by people who'd only ever sent a voice memo in an unrelated channel.
-- **Options Considered:**
-  1. Leave the metrics channel-agnostic and document the caveat. *Pros:* no code change. *Cons:* the numbers stay actively misleading.
-  2. Split every metric into three explicitly labeled sections — MINABOT (rows with no `channel_name`), SERVER-WIDE (voice, all channels), FUNNEL (kaiwa crew vs. broader membership) — and scope each function's input rows accordingly.
-- **Decision:** Option 2.
-- **Consequences:** Every number in the report now means exactly what its section header says. Computing a MINABOT metric requires remembering to filter to mina-bot rows at the call site, which is easy to get wrong in a future addition — the dashboard's `voice_per_channel` bucketing hit this exact bug (bucket range clipped to mina-bot's date range) before it shipped.
-
----
-
-## [2026-09-07] Admin dashboard reachability: localhost-only + SSH tunnel
-
-- **Status:** Accepted
-- **Context:** The dashboard's only authentication is a single HTTP Basic Auth password from `.env`. How it's exposed on the network determines whether that's actually sufficient.
-- **Options Considered:**
-  1. Bind to `0.0.0.0`, open the port publicly, plain HTTP. *Pros:* reachable from anywhere, no extra setup. *Cons:* Basic Auth credentials travel effectively in cleartext on every request.
-  2. Bind to `0.0.0.0` behind a reverse proxy doing TLS (Caddy/nginx + Let's Encrypt). *Pros:* safe to expose publicly. *Cons:* needs a domain name, reverse-proxy configuration, and certificate renewal — real ongoing maintenance for a personal admin tool.
-  3. Bind to `127.0.0.1` only, reached via `ssh -L` tunnel. *Pros:* no TLS needed since traffic never leaves the VM unencrypted; least setup. *Cons:* only reachable with SSH access, not a plain browsable URL.
-- **Decision:** Option 3.
-- **Consequences:** Basic Auth is safe as the sole auth layer, with nothing extra to maintain. Reaching the dashboard always requires an SSH tunnel first.
-
----
-
-## [2026-09-07] dashboard_data.py: duplicate primitives, never import bot.py
-
-- **Status:** Accepted
-- **Context:** `dashboard_data.py` needed several primitives that already exist in `metrics_report.py` (`TIMEZONE`, mina-bot row scoping, fraction formatting) and a handful of constants that live in `bot.py` (`TIMEZONE`, `MINA_BOT_CHANNEL_ID`, `LEVEL_LABEL_MOVED_TO_EVENING`, the evening-reveal hour). `bot.run()` is already guarded behind `if __name__ == "__main__"`, so importing `bot.py` from another script is technically safe.
-- **Options Considered:**
-  1. Extract the shared primitives into a new `metrics_lib.py`, imported by both `metrics_report.py` and `dashboard_data.py`. *Pros:* single source of truth, no drift risk. *Cons:* touches `metrics_report.py`, which is already deployed and working, immediately after a real production incident (the backfill duplication bug) — risk of a change rippling further than expected.
-  2. Duplicate the handful of needed primitives directly in `dashboard_data.py`; never import `bot.py` at all, even though doing so would be safe. *Pros:* zero risk to the deployed report code; the dashboard never constructs live Anthropic/Discord client objects for no reason. *Cons:* constants and small helper functions now have two hand-maintained copies.
-- **Decision:** Option 2, on both counts — accept the duplication, and don't import `bot.py` even though it's technically safe to.
-- **Consequences:** `metrics_report.py` stays untouched and low-risk; the dashboard has no accidental coupling to Discord/Anthropic client construction. Four constants and several small functions will drift if one copy changes without the other being updated by hand. Revisit extraction once the dashboard's shape has settled.
-
----
-
-## [2026-09-07] Self-declared level: bot writes a snapshot, dashboard never touches Discord
-
-- **Status:** Accepted
-- **Context:** The self-declared-level chart needs live Discord role membership (who holds N5/N4/N3/N2/N1/日本人), but the dashboard process is required to be read-only and Discord-independent.
-- **Options Considered:**
-  1. Have `dashboard.py` connect to Discord itself to fetch role membership on each page load. *Pros:* always fresh. *Cons:* gives the read-only dashboard a live Discord dependency and its own token/connection to manage — breaks the "dashboard never connects to Discord" boundary.
-  2. Have `bot.py` (already connected) periodically snapshot role membership to a gitignored JSON file; `dashboard_data.py` only ever reads that file. Refresh is explicit: tied to the weekly report run, plus a manual `!refreshlevels` command.
-- **Decision:** Option 2.
-- **Consequences:** The dashboard's "read-only, no Discord connection" property holds without exception. The self-declared-level chart can lag reality between refreshes. Every human member — including those holding none of the tracked roles — has to be written to the snapshot (with an empty list) so "unknown" is distinguishable from "not yet scanned."
+Product, measurement, and ethics decisions for mina-bot, in the order they were made. Implementation-only decisions that don't drive product direction live under Housekeeping; empirical findings live under Findings.
 
 ---
 
@@ -135,7 +26,7 @@ Architecture and design decisions for mina-bot, in the order they were made.
   b. **Retain everything indefinitely.** Pro: maximum analytical flexibility. Con: unnecessary custody of personal content, and most of it is never read again.
   c. **Split raw from derived.** Raw attempt text, feedback text, and audio expire after 7 attempts per user. Derived numbers — timestamps, grammar point, character counts, voice flag, exchange depth — persist. Pro: full trend capability with a one-week window on actual content. Con: cannot cite old attempts as evidence in a report; derived metrics must be computed at write time, not retroactively.
 - **Decision:** (c). The sensitive material is the Japanese someone wrote and their recorded voice. A row reading `{2026-09-01, 〜たら, avoided, 34 chars, text}` is barely personal data. This is more privacy-respecting than a flat rule, because a flat rule keeps a full week of content that mostly isn't needed.
-- **Consequences:** "Show the receipts" works for recent claims only — older patterns are counts without examples. Trimming a submission row must also delete its `.ogg` file, or retention silently doesn't cover the most personal data. Derived fields cannot be added retroactively, so any new metric starts from the day it's implemented.
+- **Consequences:** "Show the receipts" works for recent claims only — older patterns are counts without examples. Trimming a submission row must also delete its `.ogg` file, or retention silently doesn't cover the most personal data. Derived fields cannot be added retroactively, so any new metric starts from the day it's implemented. The trim is enforced per `(user_id, is_test)` bucket, so dev-channel test traffic can be arbitrarily heavy without evicting a real user's retained rows out of the 7-entry window (verified directly: 10 test writes + 3 real writes for the same fake user correctly kept all 3 real rows and only the most recent 7 test rows) — every `storage.append_*` call site has to remember which bucket it's writing to.
 
 ---
 
@@ -161,7 +52,20 @@ Architecture and design decisions for mina-bot, in the order they were made.
   b. **Log all messages, all channels, with content.** Pro: maximum analytical power. Con: storing members' messages from social channels is a real overreach for the question being asked.
   c. **Log voice presence server-wide (channel, user, timestamp, no content); text with content only in #minabot.**
 - **Decision:** (c). Presence data answers the question; content isn't needed for it. DMs excluded — a DM isn't a channel someone chose to be measured in.
-- **Consequences:** Made the finding possible that 9 of 10 voice senders are channel-exclusive — different surfaces reach different people. `metrics.jsonl` grows faster. Members have not yet been told any of this; a data-retention notice is owed before the dashboard ships.
+- **Consequences:** Made the finding possible that 9 of 10 voice senders are channel-exclusive — different surfaces reach different people. `metrics.jsonl` grows faster and now holds two different row shapes (mina-bot rows and cross-channel voice rows), which broke code that indexed `row["type"]` directly (fixed by switching to `.get("type")` in six places). Members have not yet been told any of this; a data-retention notice is owed before the dashboard ships.
+
+---
+
+## [2026-09-06] Rename daily-check-in to daily-journal
+
+- **Status:** Accepted
+- **Context:** Members reported not knowing how to use the channel — "check-in" named a ritual, not a task. The channel had 122 voice memos over 9 months, but 59% came from a single user, so it is not the thriving voice surface the raw count suggests.
+- **Options Considered:**
+  a. **Leave it as `daily-check-in`.** Pro: no churn; existing members know where things are. Con: leaves the stated confusion in place, and the ambiguity stays unmeasured.
+  b. **Rename to `daily-journal`.** Pro: names the actual task, addresses reported feedback at near-zero cost, and turns a vague complaint into a measurable intervention. Con: a rename discards whatever recognition the old name had.
+  c. **Close the channel.** Pro: honest about a surface carried by one user. Con: throws the channel away before testing whether the name was the problem.
+- **Decision:** (b). The feedback was specifically about not knowing what to do in the channel, and the name is the cheapest thing to change that could plausibly fix that.
+- **Consequences:** Voice rate in that channel becomes a naming intervention readable in about a month. Would reverse if the rate doesn't move — that would mean the name was never the barrier, and the channel's problem is something a rename can't reach.
 
 ---
 
@@ -191,6 +95,18 @@ Architecture and design decisions for mina-bot, in the order they were made.
 
 ---
 
+## [2026-09-07] Private threads, not DMs, for member outreach
+
+- **Status:** Accepted
+- **Context:** Reaching out to survey respondents who consented to be contacted. Two structures are available: a DM, visible to nobody but the two people in it, or a private thread in a channel, visible to anyone with Manage Threads — including mods.
+- **Options Considered:**
+  a. **DMs.** Pro: feels personal, and nothing sits where other staff can read it. Con: an unobserved one-on-one channel between the server owner and a member, with no third party who could ever see what was said; also requires sending friend requests.
+  b. **Private threads in a channel.** Pro: mods can see the conversation, so nothing happens unobserved, and no friend request is needed. Con: reads as slightly less personal, and the member knows others could see it.
+- **Decision:** (b). Four of the fifteen beginner respondents are 13–17, and a private one-on-one DM between the server owner and a minor is a structure worth avoiding on principle, independent of anything said in it. Threads keep the conversation in the open in a way that protects both parties. Avoiding friend requests is a secondary benefit.
+- **Consequences:** Outreach reads as slightly less personal, and mods can read the conversations. Thread creation still notifies the member, so it isn't zero-intrusion. Future member outreach should default to this structure rather than being re-decided case by case.
+
+---
+
 ## [2026-09-07] PENDING — Which segment does minabot serve?
 
 - **Status:** Proposed
@@ -201,3 +117,111 @@ Architecture and design decisions for mina-bot, in the order they were made.
   c. **Attempt both.** Con: likely serves neither well at current capacity.
 - **Decision:** Not yet made. Blocked on qualitative input.
 - **Next step:** Private threads with chartlez (the single N5 who produces — what made it possible?) and 4–5 silent N5 members from the survey consent list (isai_xov, mizafa, maissag_, flamingyawn, mkreptile, psykko_smokke, macekoel, shurahos, stalexi). Decide after.
+
+---
+
+## Housekeeping
+
+Real decisions, but implementation-only — they don't drive product direction.
+
+---
+
+## [2026-09-05] Channel-based state file routing for /checkme
+
+- **Status:** Housekeeping
+- **Context:** `/checkme` and `append_checkme_exchange` only ever read/wrote the real `STATE_FILE`, so there was no way to exercise the full checkme flow in the dev channel without risking real users seeing feedback generated against test data.
+- **Options Considered:**
+  1. Keep a single shared state file and gate dev testing some other way. *Pros:* simplest. *Cons:* doesn't solve the actual requirement — testing the full flow end-to-end.
+  2. Add `state_file_for_channel(channel_id)`, routing `BOT_DEV_CHANNEL_ID` to `TEST_STATE_FILE` and `MINA_BOT_CHANNEL_ID` to `STATE_FILE`, threaded through `send_checkme_feedback` and `on_message`. *Pros:* dev channel gets a fully working, isolated checkme flow (streaks, daily limit, and participation all separately exempted for test traffic). *Cons:* a larger diff than a minimal fix, and it touches `on_message`'s active-window check.
+- **Decision:** Option 2.
+- **Consequences:** Dev-channel testing now exercises the real code path, not a stub. Every future channel-aware feature has to remember to route through this function rather than assuming `STATE_FILE`.
+
+---
+
+## [2026-09-06] backfill.py idempotency: message_id with a composite-key fallback
+
+- **Status:** Housekeeping
+- **Context:** Re-running `backfill.py` re-inserted every already-backfilled row into `metrics.jsonl` as a fresh duplicate — `submissions.jsonl` self-healed via its trim, but `metrics.jsonl` never trims. Discovered after a real incident: 131 duplicate rows from two runs against the same channel.
+- **Options Considered:**
+  1. Re-scan Discord, patch a `message_id` onto the ~290 pre-existing rows that predate the field, then match on `message_id` alone from then on. *Pros:* one matching strategy, permanently. *Cons:* costs another full multi-channel Discord scan and an Oracle stop/restart cycle; still has to match old rows to messages by `(user_id, timestamp)` internally to perform the patch, so it doesn't remove that assumption — just relocates it to a one-time step.
+  2. Match on `message_id` when both sides have one; fall back to `(user_id, timestamp, channel_id)` for rows written before the field existed. Never patch the old rows. *Pros:* zero extra Discord calls or downtime; gets strictly more precise over time as more rows carry a real `message_id`. *Cons:* two matching strategies live in the code permanently, since the pre-existing rows will never gain a `message_id` under this approach.
+- **Decision:** Option 2, chosen explicitly over Option 1 after weighing both.
+- **Consequences:** `backfill.py` can be re-run safely at any time — verified against both the local and Oracle datasets post-fix, reporting 0 new/100% already-backfilled on a clean re-run. A future reader of `backfill.py` needs the context for why two matching strategies coexist.
+
+---
+
+## [2026-09-07] Admin dashboard reachability: localhost-only + SSH tunnel
+
+- **Status:** Housekeeping
+- **Context:** The dashboard's only authentication is a single HTTP Basic Auth password from `.env`. How it's exposed on the network determines whether that's actually sufficient.
+- **Options Considered:**
+  1. Bind to `0.0.0.0`, open the port publicly, plain HTTP. *Pros:* reachable from anywhere, no extra setup. *Cons:* Basic Auth credentials travel effectively in cleartext on every request.
+  2. Bind to `0.0.0.0` behind a reverse proxy doing TLS (Caddy/nginx + Let's Encrypt). *Pros:* safe to expose publicly. *Cons:* needs a domain name, reverse-proxy configuration, and certificate renewal — real ongoing maintenance for a personal admin tool.
+  3. Bind to `127.0.0.1` only, reached via `ssh -L` tunnel. *Pros:* no TLS needed since traffic never leaves the VM unencrypted; least setup. *Cons:* only reachable with SSH access, not a plain browsable URL.
+- **Decision:** Option 3.
+- **Consequences:** Basic Auth is safe as the sole auth layer, with nothing extra to maintain. Reaching the dashboard always requires an SSH tunnel first.
+
+---
+
+## [2026-09-07] dashboard_data.py: duplicate primitives, never import bot.py
+
+- **Status:** Housekeeping
+- **Context:** `dashboard_data.py` needed several primitives that already exist in `metrics_report.py` (`TIMEZONE`, mina-bot row scoping, fraction formatting) and a handful of constants that live in `bot.py` (`TIMEZONE`, `MINA_BOT_CHANNEL_ID`, `LEVEL_LABEL_MOVED_TO_EVENING`, the evening-reveal hour). `bot.run()` is already guarded behind `if __name__ == "__main__"`, so importing `bot.py` from another script is technically safe.
+- **Options Considered:**
+  1. Extract the shared primitives into a new `metrics_lib.py`, imported by both `metrics_report.py` and `dashboard_data.py`. *Pros:* single source of truth, no drift risk. *Cons:* touches `metrics_report.py`, which is already deployed and working, immediately after a real production incident (the backfill duplication bug) — risk of a change rippling further than expected.
+  2. Duplicate the handful of needed primitives directly in `dashboard_data.py`; never import `bot.py` at all, even though doing so would be safe. *Pros:* zero risk to the deployed report code; the dashboard never constructs live Anthropic/Discord client objects for no reason. *Cons:* constants and small helper functions now have two hand-maintained copies.
+- **Decision:** Option 2, on both counts — accept the duplication, and don't import `bot.py` even though it's technically safe to.
+- **Consequences:** `metrics_report.py` stays untouched and low-risk; the dashboard has no accidental coupling to Discord/Anthropic client construction. Four constants and several small functions will drift if one copy changes without the other being updated by hand. Revisit extraction once the dashboard's shape has settled.
+
+---
+
+## [2026-09-07] Self-declared level: bot writes a snapshot, dashboard never touches Discord
+
+- **Status:** Housekeeping
+- **Context:** The self-declared-level chart needs live Discord role membership (who holds N5/N4/N3/N2/N1/日本人), but the dashboard process is required to be read-only and Discord-independent.
+- **Options Considered:**
+  1. Have `dashboard.py` connect to Discord itself to fetch role membership on each page load. *Pros:* always fresh. *Cons:* gives the read-only dashboard a live Discord dependency and its own token/connection to manage — breaks the "dashboard never connects to Discord" boundary.
+  2. Have `bot.py` (already connected) periodically snapshot role membership to a gitignored JSON file; `dashboard_data.py` only ever reads that file. Refresh is explicit: tied to the weekly report run, plus a manual `!refreshlevels` command.
+- **Decision:** Option 2.
+- **Consequences:** The dashboard's "read-only, no Discord connection" property holds without exception. The self-declared-level chart can lag reality between refreshes. Every human member — including those holding none of the tracked roles — has to be written to the snapshot (with an empty list) so "unknown" is distinguishable from "not yet scanned."
+
+---
+
+## [2026-09-05] Durable submissions/metrics storage, separate from state.json
+
+- **Status:** Housekeeping
+- **Context:** `state.json` is overwritten fresh every morning by `run_morning`, which silently destroyed all checkme attempt/feedback history each day. `on_message` never stored public attempts at all — there was no history of the community's actual practice, only the current day's live session state.
+- **Options Considered:**
+  1. Stop wiping `state.json` / extend its lifetime. *Pros:* minimal change. *Cons:* `state.json` is meant to represent the current day's live session (posted_at/revealed_at, in-session checkme continuity); conflating it with permanent history breaks that model and the daily-reset behavior other code depends on.
+  2. Add a new `storage.py` module with two append-only files: `submissions.jsonl` (rich per-attempt detail: content, feedback, voice path — trimmed to the most recent 7 per user) and `metrics.jsonl` (lean, analytics-only fields, never trimmed). *Pros:* clean separation between "what happened" and "today's live session"; `run_morning`/`run_evening`'s existing reset behavior stays untouched. *Cons:* two new files with different retention semantics to keep straight.
+- **Decision:** Option 2. `storage.py` owns both files; `on_message` and `append_checkme_exchange` write to them without changing any existing `state.json` behavior.
+- **Consequences:** Attempt and feedback history now survives the daily reset. Any future feature that wants "history" has to pick the right file — `submissions.jsonl` for recent detail, `metrics.jsonl` for anything spanning further back or needing completeness.
+
+---
+
+## [2026-09-06] Weekly report: explicit MINABOT / SERVER-WIDE / FUNNEL scoping
+
+- **Status:** Housekeeping
+- **Context:** Once multi-channel logging landed, the report's engagement metrics (active users, total attempts, etc.) started silently pulling from the full cross-channel dataset instead of just the `#minabot` feature they were meant to describe — "active users" was inflated by people who'd only ever sent a voice memo in an unrelated channel.
+- **Options Considered:**
+  1. Leave the metrics channel-agnostic and document the caveat. *Pros:* no code change. *Cons:* the numbers stay actively misleading.
+  2. Split every metric into three explicitly labeled sections — MINABOT (rows with no `channel_name`), SERVER-WIDE (voice, all channels), FUNNEL (kaiwa crew vs. broader membership) — and scope each function's input rows accordingly.
+- **Decision:** Option 2.
+- **Consequences:** Every number in the report now means exactly what its section header says. Computing a MINABOT metric requires remembering to filter to mina-bot rows at the call site, which is easy to get wrong in a future addition — the dashboard's `voice_per_channel` bucketing hit this exact bug (bucket range clipped to mina-bot's date range) before it shipped.
+
+---
+
+## Findings
+
+- **2026-09-06** — 12 distinct users have produced Japanese in #minabot since Aug 20, not the 6 previously assumed. n=131 attempts.
+- **2026-09-06** — Character count contradicts across users (one 22→43, another 43→34, both engaged throughout). Unusable as a progress metric.
+- **2026-09-06** — Voice output is 10 people server-wide across 9 months. 9 of 10 are channel-exclusive — different surfaces reach different people.
+- **2026-09-06** — daily-journal's 122 voice memos are 59% from a single user. Stripped of that user, minabot's voice rate is roughly 2x. n is thin (15 days for minabot).
+- **2026-09-06** — Weekly reports generated before the backfill dedup were inflated by 131 duplicate rows. Don't trust screenshots from that day.
+- **2026-09-07** — 69% of survey respondents (33/48) name "I don't have anyone to practice with" as the top speaking barrier. Survey n=48, self-selected, March–August 2026, pre-minabot.
+- **2026-09-07** — 17 of 48 say they don't believe AI can replace real conversation — the top reason for not trying an AI conversation partner. Only 5 had ever used one; 4 of those lapsed or found it unhelpful.
+- **2026-09-07** — Of 253 members holding the self-declared N5 role, 1 has ever produced a single logged row anywhere the bot measures. N2 members are ~6x more likely to attempt.
+- **2026-09-07** — That single producing N5 (chartlez) originated in the 20-person closed beta, not the open channel. Small-group invitation may be the mechanism.
+- **2026-09-07** — chartlez's first barrier to voice was mechanical, not emotional — not knowing you could hold and swipe to delete a take.
+- **2026-09-07** — Attempts-before-reveal sits near 100% across the 19-day window — members produce cold rather than waiting for the answer. The desirable-difficulty property is holding.
+- **2026-09-07** — Voice per channel shows a handoff, not overlap — daily-journal carried voice Nov 2025 through June 2026, thinned over the summer, minabot picked up from mid-August. Unclear whether minabot pulled those users over or daily-journal was already declining.
