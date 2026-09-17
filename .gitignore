@@ -10,5 +10,6 @@ metrics.jsonl
 metrics.jsonl.bak-*
 self_declared_levels.json
 voice/
+archive/
 .DS_Store
 bot.log

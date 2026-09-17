@@ -10,6 +10,9 @@ SUBMISSIONS_FILE = "submissions.jsonl"
 METRICS_FILE = "metrics.jsonl"
 SUBMISSIONS_PER_USER_LIMIT = 7
 
+ARCHIVE_DIR = "archive"
+SUBMISSIONS_HISTORY_FILE = os.path.join(ARCHIVE_DIR, "submissions_history.jsonl")
+
 
 def _read_jsonl(path):
     if not os.path.exists(path):
@@ -59,12 +62,25 @@ def append_submission(user_id, type, is_test, **fields):
         if existing.get("user_id") == user_id and existing.get("is_test") == is_test:
             kept_for_bucket += 1
             if kept_for_bucket > SUBMISSIONS_PER_USER_LIMIT:
+                _archive_trimmed_submission(existing)
                 _delete_voice_file(existing.get("voice_path"))
                 continue
         trimmed.append(existing)
     trimmed.reverse()
 
     _write_jsonl(SUBMISSIONS_FILE, trimmed)
+
+
+def _archive_trimmed_submission(entry):
+    """Best-effort spill for a row about to be evicted from the rolling window.
+    Must never block or fail the live trim/write path -- a failure here is
+    logged and swallowed, not raised."""
+    try:
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        archived = {**entry, "archived_at": datetime.now(TIMEZONE).isoformat()}
+        _append_jsonl(SUBMISSIONS_HISTORY_FILE, archived)
+    except Exception as error:
+        print(f"Could not archive trimmed submission for user {entry.get('user_id')}: {error}")
 
 
 def _delete_voice_file(voice_path):
